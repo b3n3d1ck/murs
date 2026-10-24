@@ -211,15 +211,64 @@ python -m murs --lab patched    # the fixed app, for comparison
 The lab binds to `127.0.0.1` on an ephemeral port, resets its upload dirs each
 run, and is for local research only. Against `vuln`, MURS confirms execution of
 the inert canary (Critical); against `patched`, the script probe is rejected and
-no execution occurs.
+no execution occurs. There is also an SQL-injection lab:
+
+```bash
+python -m murs --lab sqli_vuln     # string-interpolated SQLite login (injectable)
+python -m murs --lab sqli_patched  # prepared-statement login (not injectable)
+```
+
+### Login discovery & SQL-injection assessment (opt-in)
+
+```bash
+# discover login pages in scope
+python -m murs https://your-site.example --login-discovery
+
+# + non-destructive SQL-injection diagnostics on discovered forms
+python -m murs https://your-site.example --sqli \
+  --sqli-delay 2 --per-host-max 200
+```
+
+Config JSON accepts the same keys: `enable_login`, `enable_sqli`, `login_wordlist`,
+`sqli_delay`, `per_host_max`.
+
+**Login discovery** classifies login pages from the crawl (forms with a password
+field), URL patterns, and a configurable wordlist, scored with recorded evidence.
+It is bounded by depth/request/timeout/rate limits, collapses catch-all/index
+pages, and **does not claim every login page is found**.
+
+**SQL-injection assessment** is non-destructive and evidence-based. It takes a
+baseline, then sends structured diagnostics — quote/paren syntax breakers and an
+`AND '1'='1'`/`'1'='2'` boolean differential (no `OR`-bypass, no `--`/`#`
+comments, no stacked `;` queries, no `UNION` data extraction, no auth bypass).
+It reports:
+
+- **error-based indication** — a *DB-specific* error signature appears that was
+  absent in the baseline (a generic 500 or the word "error" is never enough);
+- **boolean-based indication** — true vs false conditions produce a consistent,
+  significant response differential;
+- **not injectable / inconclusive / not testable** otherwise.
+
+It never concludes injection from an HTTP status or a generic error, and an
+outcome is only **confirmed** inside the bundled `sqli_vuln` lab. On an external
+target, results are indications (High / Potential) for manual confirmation —
+confirm safely in the local lab or an explicitly-provided staging environment,
+and never extract/alter data or bypass authentication on production.
+
+**Request scheduling.** SQLi probes run through a scheduler with a configurable
+inter-request delay (default **2s**), a global and optional **per-host** request
+budget, and polite back-off: on HTTP 429 it pauses and honours `Retry-After`
+(bounded), and it never rotates identity to evade throttling.
 
 ### Generating the PDF
 
 The PDF is produced automatically unless `--no-pdf` is passed. It includes a
 cover, project identity, executive summary, scope and limits, methodology,
-severity summary, endpoints examined, verified vs potential findings, full
-per-finding detail (evidence, impact, safe reproduction, remediation),
-remediation priority, retest results, conclusion, and a technical appendix —
+severity summary, endpoints examined, the upload outcome matrix, discovered
+login pages and the SQL-injection outcome table (when those run), verified vs
+potential findings, full per-finding detail (evidence, impact, safe
+reproduction, remediation), remediation priority, retest results, conclusion,
+and a technical appendix —
 with page numbers, header/footer, and document metadata. The output path is
 printed only after the file is written.
 

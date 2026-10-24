@@ -40,6 +40,14 @@ class ScanConfig:
     # upload
     max_test_file_bytes: int = 64 * 1024
 
+    # login discovery + SQL injection (opt-in)
+    enable_login: bool = False
+    enable_sqli: bool = False
+    login_wordlist: str | None = None
+    sqli_delay: float = 2.0            # inter-request delay for SQLi probes
+    per_host_max: int | None = None    # per-host request budget (None = unset)
+    sqli_lab_confirm: bool = False     # allow "confirmed" only for the local lab
+
     # output
     report_dir: str = "reports"
     mode: str = "assessment"

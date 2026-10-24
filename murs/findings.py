@@ -89,12 +89,83 @@ class FindingEngine:
     def __init__(self, tested_at: str):
         self.tested_at = tested_at
 
-    def build(self, discovery, upload_attempts: list) -> list[Finding]:
+    def build(self, discovery, upload_attempts: list,
+              login_candidates: list | None = None,
+              sqli_targets: list | None = None) -> list[Finding]:
         out: list[Finding] = []
         out.extend(self._from_discovery(discovery))
         out.extend(self._from_uploads(upload_attempts))
+        out.extend(self._from_login(login_candidates or []))
+        out.extend(self._from_sqli(sqli_targets or []))
         out.sort(key=lambda f: (_severity_rank(f.severity), f.title))
         return out
+
+    # --------------------------------------------------------------- login
+    def _from_login(self, candidates: list) -> list[Finding]:
+        if not candidates:
+            return []
+        urls = ", ".join(c.url for c in candidates[:8])
+        return [Finding(
+            id=_fid("login", candidates[0].url, "set"),
+            title="Login page(s) discovered",
+            category="Authentication surface",
+            severity=INFO, confidence=INFORMATIONAL, endpoint=candidates[0].url,
+            detection_method="Form/password-field + URL-pattern + wordlist probing",
+            observed_condition=f"{len(candidates)} login candidate(s): {urls}",
+            impact="Authentication surface for review; not a vulnerability by itself.",
+            prerequisites="None.",
+            reproduction="Open each candidate URL and confirm the login form.",
+            recommendation="Ensure login is rate-limited, over HTTPS, and protected "
+                           "against credential stuffing and injection.",
+            tested_at=self.tested_at, verification_status=V_CONFIRMED,
+            evidence={"candidates": [{"url": c.url, "score": c.score,
+                                      "evidence": c.evidence} for c in candidates[:8]]},
+        )]
+
+    # ---------------------------------------------------------------- sqli
+    def _from_sqli(self, targets: list) -> list[Finding]:
+        from .sqli import (ERROR_INDICATION, BOOLEAN_INDICATION,
+                           CONFIRMED as SQLI_CONFIRMED)
+        findings: list[Finding] = []
+        for tgt in targets:
+            for r in tgt.results:
+                if r.outcome == SQLI_CONFIRMED:
+                    sev, conf, status, title = (
+                        CRITICAL, CONFIRMED, V_CONFIRMED,
+                        "SQL injection confirmed (local lab)")
+                elif r.outcome == ERROR_INDICATION:
+                    sev, conf, status, title = (
+                        HIGH, POTENTIAL, V_POTENTIAL,
+                        "Possible SQL injection — error-based indication")
+                elif r.outcome == BOOLEAN_INDICATION:
+                    sev, conf, status, title = (
+                        HIGH, POTENTIAL, V_POTENTIAL,
+                        "Possible SQL injection — boolean-based indication")
+                else:
+                    continue
+                findings.append(Finding(
+                    id=_fid("sqli", tgt.url, r.param),
+                    title=title, category="SQL injection",
+                    severity=sev, confidence=conf, endpoint=tgt.url,
+                    detection_method=("DB error signature appeared after a quote probe "
+                                      "(absent in baseline)" if r.outcome == ERROR_INDICATION
+                                      else "Boolean true/false differential vs baseline"
+                                      if r.outcome == BOOLEAN_INDICATION
+                                      else "Local-lab confirmation"),
+                    observed_condition=f"Parameter '{r.param}': {r.outcome_label} "
+                                       f"(baseline HTTP {r.baseline_status}).",
+                    impact="If exploitable, an attacker could read or alter database "
+                           "content. Not confirmed on this target unless stated.",
+                    prerequisites="Reachable parameter in scope.",
+                    reproduction=f"Submit the '{r.param}' parameter with a single quote "
+                                 "and a true/false AND condition; compare to baseline. "
+                                 "Confirm safely in the local SQLi lab.",
+                    recommendation="Use parameterised queries / prepared statements, "
+                                   "validate input, and avoid surfacing DB errors.",
+                    tested_at=self.tested_at, verification_status=status,
+                    evidence=dict(r.evidence, param=r.param, outcome=r.outcome),
+                ))
+        return findings
 
     # ------------------------------------------------------------- discovery
     def _from_discovery(self, d) -> list[Finding]:

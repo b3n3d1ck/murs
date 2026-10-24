@@ -67,6 +67,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(200, f"QUERY={qs}".encode())
         if path == "/echo-host":
             return self._send(200, f"HOST={self.headers.get('Host', '')}".encode())
+        if path == "/sqli-generic-500":
+            # a generic server error with NO DB-specific signature
+            return self._send(500, b"Internal Server Error - something went wrong")
         if path == "/echo-headers":
             names = ",".join(sorted(k.lower() for k in self.headers.keys()))
             return self._send(200, f"HEADERS={names}".encode())
@@ -132,6 +135,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(redirect_codes[path], b"", extra={"Location": "/echo"})
         if path == "/echo":
             return self._send(200, self._echo("POST", len(raw)))
+        if path == "/sqli-generic-500":
+            return self._send(500, b"Internal Server Error - something went wrong")
         name, data = _parse_first_file(self.headers.get("Content-Type", ""), raw)
         if path == "/upload":
             if name is None:

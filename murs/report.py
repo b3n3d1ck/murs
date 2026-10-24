@@ -48,6 +48,8 @@ class ReportData:
     methodology: list[str] = field(default_factory=list)
     retest: list = field(default_factory=list)  # RetestEntry list
     upload_attempts: list = field(default_factory=list)  # UploadAttempt list
+    login_candidates: list = field(default_factory=list)  # LoginCandidate list
+    sqli_targets: list = field(default_factory=list)  # SqliTarget list
     notes: list[str] = field(default_factory=list)
 
 
@@ -252,6 +254,32 @@ class _DocMaker:
                         "actually retrieved there. Execution URL: shown only when the "
                         "evaluated marker was observed. Unverified candidate paths are "
                         "never listed as confirmed results.", ss["Small"]))
+
+        # login pages discovered
+        if d.login_candidates:
+            s.append(Spacer(1, 3 * mm))
+            s.append(_p("Login pages discovered", ParagraphStyle(
+                "lsub", parent=ss["Body"], fontName="Helvetica-Bold", fontSize=10)))
+            rows = [["URL", "Score", "Evidence"]]
+            for c in d.login_candidates[:40]:
+                rows.append([c.url, str(c.score), "; ".join(c.evidence)])
+            s.append(_table(rows, [70 * mm, 16 * mm, 79 * mm], ss))
+            s.append(_p("Login discovery is best-effort (crawl + forms + wordlist); "
+                        "it does not guarantee every login page was found.", ss["Small"]))
+
+        # SQL injection assessment outcomes
+        if d.sqli_targets:
+            s.append(Spacer(1, 3 * mm))
+            s.append(_p("SQL injection assessment", ParagraphStyle(
+                "ssub", parent=ss["Body"], fontName="Helvetica-Bold", fontSize=10)))
+            rows = [["Endpoint", "Param", "Outcome", "Confidence"]]
+            for tgt in d.sqli_targets:
+                for r in tgt.results:
+                    rows.append([tgt.url, r.param, r.outcome_label, r.confidence])
+            s.append(_table(rows, [64 * mm, 26 * mm, 50 * mm, 25 * mm], ss))
+            s.append(_p("Non-destructive diagnostics only. An indication is never derived "
+                        "from an HTTP status or a generic error; a 'confirmed' outcome "
+                        "comes only from the local SQLi lab.", ss["Small"]))
 
         # 6. Verified findings
         s.append(_p("6. Verified findings", ss["H1"]))

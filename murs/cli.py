@@ -48,7 +48,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--auth-header", action="append", default=[], metavar="NAME:VALUE",
                    help="send an auth header, e.g. 'Authorization: Bearer ...' "
                         "(repeatable); never written to the report")
-    p.add_argument("--lab", choices=("vuln", "patched"),
+    p.add_argument("--login-discovery", action="store_true",
+                   help="discover login pages within scope")
+    p.add_argument("--sqli", action="store_true",
+                   help="assess forms for SQL injection (non-destructive diagnostics)")
+    p.add_argument("--sqli-delay", type=float, default=2.0,
+                   help="inter-request delay (seconds) for SQLi probes (default 2)")
+    p.add_argument("--per-host-max", type=int, default=None,
+                   help="per-host request budget")
+    p.add_argument("--login-wordlist", help="path to a login-path wordlist")
+    p.add_argument("--lab", choices=("vuln", "patched", "sqli_vuln", "sqli_patched"),
                    help="run against the bundled localhost lab instead of a URL")
     p.add_argument("--allow-private", action="store_true",
                    help="permit private/loopback targets (self-hosted labs only)")
@@ -81,6 +90,11 @@ def _make_config(args) -> ScanConfig:
         wordlist=args.wordlist,
         mode=args.mode,
         report_dir=args.report_dir,
+        enable_login=args.login_discovery or args.sqli,
+        enable_sqli=args.sqli,
+        sqli_delay=args.sqli_delay,
+        per_host_max=args.per_host_max,
+        login_wordlist=args.login_wordlist,
     )
     return cfg
 
@@ -172,6 +186,12 @@ def main(argv=None) -> int:
             cfg.allowed_hosts = {lab.host}
             cfg.allowed_ports = {lab.port}
             allow_private = True
+            if args.lab.startswith("sqli"):
+                # the SQLi labs are the explicitly-provided environment where a
+                # "confirmed" injection outcome is permitted.
+                cfg.enable_login = True
+                cfg.enable_sqli = True
+                cfg.sqli_lab_confirm = True
             ui.line("sys", f"lab '{args.lab}' running at {lab.base} (localhost only)")
 
         prepare(cfg)
@@ -241,6 +261,8 @@ def main(argv=None) -> int:
                 started_at=result.started_at, finished_at=result.finished_at,
                 requests_made=result.requests_made, retest=retest_entries,
                 upload_attempts=result.upload_attempts,
+                login_candidates=result.login_candidates,
+                sqli_targets=result.sqli_targets,
                 notes=result.notes,
             )
             path = generate_pdf(data, out_dir=cfg.report_dir)

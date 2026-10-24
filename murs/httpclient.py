@@ -123,6 +123,7 @@ class HttpClient:
         private_hosts: set[str] | None = None,
         auth_headers: dict[str, str] | None = None,
         user_agent: str = "MURS/1.0 (+authorized-research)",
+        scheduler=None,
     ) -> None:
         self.allowed_hosts = allowed_hosts
         self.allowed_ports = allowed_ports
@@ -143,6 +144,9 @@ class HttpClient:
         # never stored on responses or written to reports.
         self.auth_headers = dict(auth_headers or {})
         self.user_agent = user_agent
+        # optional RequestScheduler: adds inter-request delay, per-host budget
+        # and 429/Retry-After back-off. None -> legacy rate-limit behaviour.
+        self.scheduler = scheduler
         self.count = 0
         self._last_ts = 0.0
 
@@ -213,7 +217,15 @@ class HttpClient:
             out.blocked, out.reason = True, "request budget exceeded"
             raise RequestBudgetExceeded(target.url)
 
-        self._throttle()
+        # optional scheduler: per-host/global budget + delay + 429 back-off.
+        if self.scheduler is not None:
+            ok, why = self.scheduler.check_budget(target.host)
+            if not ok:
+                out.blocked, out.reason = True, why
+                return out
+            self.scheduler.acquire(target.host)
+        else:
+            self._throttle()
         self.count += 1
 
         req_headers = {
@@ -256,6 +268,10 @@ class HttpClient:
                         out.set_cookies.append(v)
                     raw_headers[lk] = v
                 out.headers = raw_headers
+                if self.scheduler is not None and out.status == 429:
+                    waited = self.scheduler.on_response(out.status, raw_headers)
+                    if waited:
+                        out.reason = f"server throttled (429); waited {waited:.0f}s"
                 data = r.read(self.max_response_bytes + 1)
                 if len(data) > self.max_response_bytes:
                     out.truncated = True

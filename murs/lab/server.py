@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 LAB_DIR = Path(__file__).resolve().parent
-VARIANTS = ("vuln", "patched")
+VARIANTS = ("vuln", "patched", "sqli_vuln", "sqli_patched")
 
 
 class LabUnavailable(RuntimeError):
@@ -60,6 +60,15 @@ class LabServer:
                 for f in p.iterdir():
                     if f.is_file():
                         f.unlink()
+        # reset the SQLi lab's throwaway SQLite database
+        import tempfile
+        for name in ("murs_sqli_vuln.db", "murs_sqli_patched.db"):
+            dbf = Path(tempfile.gettempdir()) / name
+            try:
+                if dbf.exists():
+                    dbf.unlink()
+            except OSError:
+                pass
 
     def __enter__(self) -> "LabServer":
         self._clean()

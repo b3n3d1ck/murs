@@ -16,4 +16,5 @@ murs = "murs.cli:main"
 packages = ["murs", "murs.lab"]
 
 [tool.setuptools.package-data]
-murs = ["wordlists/*.txt", "lab/vuln/*.php", "lab/patched/*.php"]
+murs = ["wordlists/*.txt", "lab/vuln/*.php", "lab/patched/*.php",
+        "lab/sqli_vuln/*.php", "lab/sqli_patched/*.php"]

@@ -30,6 +30,8 @@ class RunResult:
     finished_at: str
     requests_made: int
     notes: list[str] = field(default_factory=list)
+    login_candidates: list = field(default_factory=list)
+    sqli_targets: list = field(default_factory=list)
 
 
 def prepare(cfg: ScanConfig) -> Target:
@@ -92,7 +94,51 @@ def run_assessment(cfg: ScanConfig, emit=None, allow_private: bool = False,
         if not discovery.upload_forms:
             emit("info", "no upload forms discovered; skipping upload assessment")
 
-    findings = FindingEngine(tested_at=_now()).build(discovery, upload_attempts)
+    # --- login discovery (opt-in) -------------------------------------------
+    login_candidates: list = []
+    if cfg.enable_login or cfg.enable_sqli:
+        from .login import LoginDiscovery
+        emit("info", "discovering login pages")
+        try:
+            login_candidates = LoginDiscovery(cfg, client, emit).find(discovery)
+        except RequestBudgetExceeded:
+            notes.append("request budget reached during login discovery")
+        emit("ok", f"login discovery: {len(login_candidates)} candidate(s)")
+
+    # --- SQL injection assessment (opt-in) ----------------------------------
+    sqli_targets: list = []
+    if cfg.enable_sqli:
+        from .sqli import SqliModule
+        from .scheduler import RequestScheduler
+        # a dedicated, politely-paced client: inter-request delay (default 2s),
+        # optional per-host budget, 429/Retry-After back-off.
+        sched = RequestScheduler(min_delay=cfg.sqli_delay, per_host_max=cfg.per_host_max)
+        sqli_client = HttpClient(
+            allowed_hosts=cfg.allowed_hosts, allowed_ports=cfg.allowed_ports,
+            allowed_schemes=cfg.allowed_schemes, timeout=cfg.timeout, retries=cfg.retries,
+            max_response_bytes=cfg.max_response_bytes, rate_limit_per_sec=cfg.rate_limit_per_sec,
+            max_requests=cfg.max_requests, allow_private=allow_private,
+            auth_headers=auth_headers or None, scheduler=sched,
+        )
+        sqli = SqliModule(sqli_client, emit, lab_confirm=cfg.sqli_lab_confirm)
+        # test the login forms (and any other form with testable params)
+        forms = {(c.action_url, c.method): c.param_names for c in login_candidates if c.param_names}
+        for form in discovery.forms:
+            if form.field_names and not form.is_upload:
+                forms.setdefault((form.action_url, form.method), form.field_names)
+        for (action_url, method), names in forms.items():
+            emit("sqli", f"testing {method.upper()} {action_url} ({len(names)} param)")
+            try:
+                sqli_targets.append(sqli.assess_form(action_url, method, names))
+            except RequestBudgetExceeded:
+                notes.append("request budget reached during SQLi assessment")
+                emit("warn", "request budget reached; stopping SQLi assessment")
+                break
+        notes.append("SQLi probes are non-destructive diagnostics; confirmation of "
+                     "exploitable injection is lab-only.")
+
+    findings = FindingEngine(tested_at=_now()).build(
+        discovery, upload_attempts, login_candidates, sqli_targets)
     emit("ok", f"{len(findings)} finding(s) classified")
 
     # be explicit about what could not be assessed without authentication
@@ -107,4 +153,5 @@ def run_assessment(cfg: ScanConfig, emit=None, allow_private: bool = False,
         config=cfg, base=base, discovery=discovery, upload_attempts=upload_attempts,
         findings=findings, started_at=started, finished_at=_now(),
         requests_made=client.count, notes=notes,
+        login_candidates=login_candidates, sqli_targets=sqli_targets,
     )

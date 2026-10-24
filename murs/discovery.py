@@ -55,6 +55,19 @@ class DiscoveredForm:
     enctype: str
     file_fields: list[str]
     is_upload: bool
+    # all field (name, type) pairs — used by login/SQLi assessment.
+    fields: list = field(default_factory=list)
+
+    @property
+    def field_names(self) -> list[str]:
+        return [n for n, _ in self.fields if n]
+
+    @property
+    def password_field(self) -> str | None:
+        for name, ftype in self.fields:
+            if ftype == "password":
+                return name
+        return None
 
 
 @dataclass
@@ -226,6 +239,7 @@ class DiscoveryEngine:
             page_url=page.url, action_url=action_url, method=form.method,
             enctype=form.enctype, file_fields=[f.name for f in form.file_fields],
             is_upload=form.is_upload,
+            fields=[(f.name, f.type) for f in form.fields],
         )
         self.result.forms.append(df)
         if df.is_upload:
