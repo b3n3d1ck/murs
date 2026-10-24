@@ -1,0 +1,3 @@
+# MURS runtime dependencies.
+# Everything else (HTTP, HTML parsing, DNS/IP, multipart) is standard library.
+reportlab>=4.0

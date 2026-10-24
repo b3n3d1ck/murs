@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+reports/*.pdf
+murs/lab/vuln/uploads/
+murs/lab/storage_patched/
+*.egg-info/
+.venv/
