@@ -1,290 +1,172 @@
 # MURS — Matrix Upload Research Suite
 
-An authorized web-security research tool focused on **file-upload safety**. MURS
-runs scope-bound active discovery, assesses upload endpoints with **inert,
-uniquely-marked probe files**, classifies findings by evidence, generates a
-professional PDF report, and supports before/after **retesting**. It ships an
-isolated **localhost lab** (a deliberately-vulnerable PHP app and a patched
-one) so upload-to-RCE risk can be demonstrated — and fixed — reproducibly.
+Tool buat riset keamanan web, fokusnya di **keamanan upload file** plus
+sekarang udah bisa nyari halaman login dan ngecek **SQL injection**. Semua
+jalan dari terminal, hasilnya bisa diekspor jadi laporan PDF.
 
-> MURS is for systems you own or are explicitly authorized to test. It does not
-> grant authorization. It never uploads functional webshells, backdoors, reverse
-> shells, or command-execution payloads, and never attempts to bypass
-> authentication or access control. Server-side code execution is demonstrated
-> only inside the bundled lab, using an inert echo-marker.
+![Contoh jalanin MURS di lab lokal](docs/screenshot.png)
 
-## Why upload testing is handled carefully here
+> Singkatnya: kamu kasih URL target yang **boleh** kamu tes, MURS nyusurin
+> situsnya, nyoba hal-hal yang aman buat nguji, terus bikin laporan. Dia nggak
+> ngerusak apa-apa dan nggak nembus login orang.
 
-A `200 OK`, a `.php` filename, or a "file uploaded" message proves nothing about
-whether a server will *run* an uploaded file. MURS only asserts execution when
-the stored file, once fetched, returns the **evaluated** marker (and not its raw
-source). The marker is a static `echo` of a random token: no command execution,
-no input handling, no includes — it cannot be weaponized.
+## About
 
-## Architecture
+Halo, saya **Bram**. MURS ini project belajar saya soal keamanan aplikasi web —
+awalnya iseng pengen ngerti gimana cara kerja celah upload file (yang suka
+berujung ke webshell), terus kebablasan jadi suite kecil yang lumayan lengkap.
 
-```
-murs/
-  netutil.py     URL normalization, DNS/IP validation (SSRF), scope checks
-  httpclient.py  scope-bound HTTP: timeouts, retries, rate limit, body cap,
-                 per-hop redirect re-validation, request budget
-  forms.py       HTML link/form/file-input parsing (stdlib)
-  discovery.py   crawl + directory wordlist + fingerprinting + soft-404
-  upload.py      inert upload probes, staged evidence, access-control checks
-  findings.py    evidence-bound classification (severity/confidence/status)
-  report.py      ReportLab PDF (cover, sections, tables, page numbers)
-  retest.py      before/after comparison (Fixed / Still Present / New)
-  runner.py      orchestration: discovery -> upload -> findings
-  cli.py, ui.py  argparse + Matrix terminal UI (events reflect real work)
-  lab/           localhost PHP lab: vuln/ and patched/ + server runner
-  wordlists/     default discovery wordlist
-tests/           unittest suite + a local HTTP fixture app
-```
+Daripada cuma baca teori, saya bikin tool yang beneran jalan: ada engine-nya,
+ada lab rentan buatan sendiri buat latihan, ada test suite-nya, sampai laporan
+PDF biar kayak kerjaan beneran. Jadi project ini separuh alat, separuh catatan
+belajar.
 
-Runtime dependencies: **Python 3.10+** and **reportlab** (for PDF). The local
-lab needs the **php** CLI. Everything else is the standard library.
+Satu hal yang saya pegang dari awal: tool ini buat kerjaan yang **punya izin**.
+Dia ngebantu kamu *nemuin* dan *mendokumentasikan* masalah, bukan buat
+nerobos sistem orang. Pembuktian yang "berbahaya" (kayak eksekusi kode atau
+bypass login) sengaja saya kurung di lab lokal, bukan ke target beneran.
 
-## Installation
+## Bisa ngapain aja?
 
-```bash
-git clone <this-repo> murs && cd murs
-python3 -m pip install -r requirements.txt     # installs reportlab
-# optional, for the lab: install php (e.g. apt install php-cli)
-```
+- **Scan upload pasif** — kasih URL, MURS baca apa yang server buka: header
+  keamanan, cookie, file sensitif yang kebuka, teknologi/CMS, dll. Cuma GET,
+  nggak nyerang.
+- **Uji keamanan upload** — kalau nemu form upload, dia nyoba file penanda
+  **inert** (nggak berbahaya) buat ngecek: filenya diterima nggak, kesimpan di
+  mana, bisa diakses nggak, dieksekusi nggak. Statusnya jelas, nggak asal nebak.
+- **Analisis URL / phishing** (`/analyze` offline) — cek link mencurigakan tanpa
+  ngirim request ke mana-mana.
+- **Nyari halaman login / admin** — dari form, pola URL, sama wordlist.
+- **Cek SQL injection** — non-destruktif, berbasis bukti (error-based +
+  boolean). Nggak asal nyimpulin dari status HTTP.
+- **Laporan PDF otomatis** + bisa **retest** (bandingin sebelum/sesudah
+  diperbaiki).
+- **Lab lokal** rentan vs udah-diperbaiki, buat latihan dan buktiin konsep
+  dengan aman.
 
-No install step is required to run it from the source tree.
+Yang perlu diinget: deteksi itu **best-effort**, bukan jaminan. Hasil bersih
+bukan berarti aman 100%.
 
-## Running
+## Butuh apa buat jalanin
 
-All of these are equivalent entry points:
+- **Python 3.10+** dan **reportlab** (buat PDF).
+- **php** CLI kalau mau pakai lab lokal.
+- Sisanya pakai standard library Python, jadi nggak ribet.
 
 ```bash
-./run.sh            <args>     # Linux / macOS / WSL / Kali / Ubuntu
-run.cmd             <args>     # Windows CMD
-powershell -File run.ps1 <args>  # Windows PowerShell
-python -m murs      <args>     # any platform
+git clone https://github.com/b3n3d1ck/murs && cd murs
+python3 -m pip install -r requirements.txt   # install reportlab
+# opsional, buat lab: apt install php-cli
 ```
 
-The launchers check for Python, reportlab and php, and print clear notes if any
-are missing (MURS still runs; only the dependent feature is skipped).
+Nggak perlu di-install juga sebenernya, bisa langsung jalan dari folder-nya.
 
-### Scanning an authorized target
+## Cara jalanin
+
+Semua ini sama aja, pilih yang enak:
 
 ```bash
-python -m murs https://your-site.example \
-  --project "Q1 upload review" --researcher "you" \
-  --scope-host your-site.example --depth 2 --max-requests 300 --rate 6
+./run.sh            <argumen>     # Linux / macOS / WSL / Kali / Ubuntu
+run.cmd             <argumen>     # Windows CMD
+powershell -File run.ps1 <argumen>  # Windows PowerShell
+python -m murs      <argumen>     # platform apa aja
 ```
 
-MURS normalizes the URL (scheme optional, `www` accepted), prints the **final
-URL and scope** before the active phase, then runs discovery and (in
-`assessment` mode) upload probing. A PDF lands in `reports/`.
-
-Private/loopback targets are refused by the SSRF guard. For a self-hosted local
-test target you control, add `--allow-private` — this approves **only the hosts
-in scope**, not a blanket private-network bypass (a redirect to any other
-private address is still refused).
-
-The client resolves the host, validates every resolved IPv4/IPv6 address, and
-**pins the socket to a validated IP** so the hostname cannot be re-resolved to a
-private address mid-connection (DNS-rebinding resistance; covered by a test that
-asserts the socket connects to the validated IP and the host is resolved only
-once). HTTPS still verifies the certificate and uses SNI for the original
-hostname. Redirects are followed with correct per-code semantics (301/302/303 →
-GET, 307/308 preserve method+body) and credentials are dropped on any origin
-change. Query strings are preserved on the wire (the fragment is never sent),
-and IPv6 literals are bracketed correctly in the authority and `Host` header.
-
-The `--allow-private` lab exception is **loopback-only and fail-closed**: an
-approved host may resolve to `127.0.0.1`/`::1`, but if it resolves to a LAN
-address, link-local, or the cloud metadata service — or to a mix — the request
-is refused. Approving a hostname never means trusting whatever DNS returns.
-
-### Authenticated assessment (optional)
-
-For targets you're authorized to test that need a session, supply your own:
+### Scan target yang kamu punya izinnya
 
 ```bash
-# safer: environment variables (not saved in shell history, not in the process
-# argument list the way flags are)
-export MURS_AUTH_COOKIE="session=<your-test-session>"
-export MURS_AUTH_HEADER="Authorization: Bearer <token>"
-python -m murs https://your-site.example
-
-# or as flags (convenient, but see the caveat below)
-python -m murs https://your-site.example \
-  --auth-cookie "session=<your-test-session>" \
-  --auth-header "Authorization: Bearer <token>"
+python -m murs https://situs-kamu.example \
+  --project "Review upload Q1" --researcher "nama kamu" \
+  --scope-host situs-kamu.example --depth 2 --max-requests 300 --rate 6
 ```
 
-MURS never acquires credentials itself and never bypasses authentication. The
-values you supply are sent only to in-scope hosts, are **excluded from the PDF,
-the findings JSON, and logs** (only header *names* are ever shown), and are
-dropped whenever a redirect changes the **origin** (scheme, host, or port —
-including any HTTPS→HTTP downgrade). Endpoints that still require authentication
-are listed as not-assessed rather than treated as findings.
+MURS bakal nampilin **URL final + scope** dulu sebelum mulai, baru jalan. Target
+yang ngarah ke alamat lokal/privat otomatis ditolak (biar nggak kena SSRF).
 
-> **Caveat (honest):** credentials passed as `--auth-*` **flags** are visible to
-> other local users through the process list and may be written to your shell
-> history. The env-var form avoids both. MURS does not, and cannot, secure the
-> input path before it reaches the process — only what it does with the value
-> afterward. This is not claimed to be audited end-to-end.
+### Nyari login + uji SQLi (opsional, harus diaktifin)
 
-**Redirect header policy.** A caller-supplied `Host` header never overrides the
-`Host` derived from the validated target (that would defeat scope/SSRF pinning).
-On any origin change (scheme, host, or port), MURS applies an **allowlist**, not
-a denylist: it forwards only a few generic headers (`Accept`, `Accept-Language`,
-`Accept-Encoding`, `User-Agent`), and drops **every** other caller header —
-credentials and arbitrary custom headers alike. This means correctness does not
-depend on a regex recognising every secret header name; an unknown custom auth
-header (`X-Access-Token`, `X-Amz-Security-Token`, anything) is dropped because it
-is simply not on the allowlist. Body-framing headers (`Content-Type`,
-`Content-Length`) ride along only when the body itself is preserved (307/308);
-when a 301/302/303 turns the request into a bodyless GET, they are removed with
-the body. Same-origin hops keep the caller's headers unchanged.
-
-**Secret redaction (evidence snippets).** `redact_secrets()` masks: credential
-headers by name — Authorization (the full `Bearer`/`Basic` value, not just the
-scheme word), Proxy-Authorization, Cookie, Set-Cookie, X-API-Key / API-Key,
-X-Auth-Token, Authentication, X-CSRF-Token; `Bearer`/`Basic` values anywhere;
-`key=value` secrets in query strings / form bodies; `"key":"value"` secrets in
-JSON; and any long opaque token. It is **best-effort and pattern-based, not
-universal** — it won't catch every encoding, custom key name, or
-split/obfuscated value, and it scans only the first ~600 chars. The reliable
-control is that MURS never stores request auth headers on responses or in
-findings in the first place (verified by tests that a Bearer-token canary is
-absent from stdout, the PDF, and the findings JSON).
-
-### Setting scope
-
-- `--scope-host HOST` (repeatable) — hosts allowed in scope. The target host is
-  always added. Only these hosts are ever requested; redirects leaving them are
-  reported, not followed.
-- `--port N` (repeatable), `--depth`, `--max-requests`, `--rate`, `--timeout`,
-  `--retries`, `--max-response-bytes`, `--max-file-bytes`, `--wordlist`,
-  `--mode {passive,discovery,assessment}`, `--report-dir`.
-- Or load everything from JSON: `--config config.json` (see `ScanConfig`).
-
-### Active discovery
-
-Discovery crawls in-scope links, parses forms (flagging multipart/file-input
-upload forms), probes a configurable directory wordlist, fingerprints the server
-/ tech (incl. WordPress when evidenced), and lists missing security headers.
-Responses are classified as `normal`, `auth-required`, `not-found`, `redirect`,
-`rate-limited`, `error`, or `ambiguous`, with **soft-404 calibration** (two
-probes) so fallback pages don't become false positives.
-
-### Reading the upload assessment
-
-For each discovered upload endpoint, MURS sends inert probes (image, text,
-script-extension canary, double-extension) and records, per probe: whether it
-was **sent**, the server's response, whether it was tentatively **accepted**,
-the **stored location** (if derivable), whether it was **accessible**, whether
-it was **access-controlled**, and whether it **executed**. Only an observed
-evaluated marker raises a finding to *Unrestricted upload → code execution*
-(Critical / Confirmed).
-
-Each probe resolves to exactly one explicit **outcome** (kept separate on
-purpose), reported in the terminal and in the PDF's outcome matrix:
-
-| Outcome | Meaning | Execution URL reported? |
-|---|---|---|
-| `rejected` | validation refused the file | no |
-| `accepted_location_unknown` | stored, location not derivable | no |
-| `accepted_access_controlled` | stored, but the file is not retrievable (401/403) | no |
-| `accepted_public_not_interpreted` | retrievable, served as inert source | no |
-| `server_side_interpreted_unconfirmed` | processed server-side, but execution **not** proven | no |
-| `execution_unconfirmed` | accepted, but execution could not be verified | no |
-| `execution_confirmed` | evaluated marker returned — execution proven | **yes** |
-
-An execution URL is emitted **only** for `execution_confirmed`. Interpretation
-that cannot be proven is reported as unconfirmed, never inferred from an HTTP
-status or a file extension.
-
-### Running the local lab
+Ini fiturnya **nggak otomatis** — harus diminta:
 
 ```bash
-python -m murs --lab vuln       # intentionally-vulnerable app (localhost only)
-python -m murs --lab patched    # the fixed app, for comparison
+# cari halaman login dalam scope
+python -m murs https://situs-kamu.example --login-discovery
+
+# + uji SQLi (non-destruktif) di form yang ketemu
+python -m murs https://situs-kamu.example --sqli --sqli-delay 2 --per-host-max 200
 ```
 
-The lab binds to `127.0.0.1` on an ephemeral port, resets its upload dirs each
-run, and is for local research only. Against `vuln`, MURS confirms execution of
-the inert canary (Critical); against `patched`, the script probe is rejected and
-no execution occurs. There is also an SQL-injection lab:
+Kalau fiturnya nggak keluar di laporan, kemungkinan besar kamu lupa flag-nya.
+Cek bagian "Scope JSON" di appendix PDF: kalau `enable_login` / `enable_sqli`
+masih `False`, berarti modulnya emang nggak dijalanin.
+
+### Pakai sesi login sendiri (kalau butuh)
+
+Buat target yang perlu login dan kamu punya sesinya:
 
 ```bash
-python -m murs --lab sqli_vuln     # string-interpolated SQLite login (injectable)
-python -m murs --lab sqli_patched  # prepared-statement login (not injectable)
+# lebih aman lewat environment variable (nggak kesimpen di history shell)
+export MURS_AUTH_COOKIE="session=<sesi-tes-kamu>"
+python -m murs https://situs-kamu.example --login-discovery
 ```
 
-### Login discovery & SQL-injection assessment (opt-in)
+Nilai yang kamu kasih cuma dikirim ke host yang in-scope, **nggak** ditulis ke
+PDF/log, dan dibuang kalau redirect pindah origin. Catatan jujur: kalau dikasih
+lewat flag (`--auth-cookie`), nilainya bisa keliatan di process list / history —
+makanya mending pakai env var.
+
+## Lab lokal
+
+Buat latihan dan buktiin konsep tanpa ganggu siapa-siapa. Semua jalan cuma di
+`127.0.0.1`:
 
 ```bash
-# discover login pages in scope
-python -m murs https://your-site.example --login-discovery
-
-# + non-destructive SQL-injection diagnostics on discovered forms
-python -m murs https://your-site.example --sqli \
-  --sqli-delay 2 --per-host-max 200
+python -m murs --lab vuln          # app upload sengaja dibikin rentan
+python -m murs --lab patched       # versi udah diperbaiki, buat pembanding
+python -m murs --lab sqli_vuln     # login SQLite rentan (string digabung langsung)
+python -m murs --lab sqli_patched  # login pakai prepared statement (aman)
 ```
 
-Config JSON accepts the same keys: `enable_login`, `enable_sqli`, `login_wordlist`,
-`sqli_delay`, `per_host_max`.
+Di `sqli_vuln`, SQLi-nya bisa sampai status **confirmed** karena ini lab yang
+emang disediain buat itu. Di target beneran, hasilnya cuma **indikasi**
+(High/Potential) buat dikonfirmasi manual — konfirmasi penuhnya ya di lab.
 
-**Login discovery** classifies login pages from the crawl (forms with a password
-field), URL patterns, and a configurable wordlist, scored with recorded evidence.
-It is bounded by depth/request/timeout/rate limits, collapses catch-all/index
-pages, and **does not claim every login page is found**.
+## Soal SQL injection (biar nggak salah paham)
 
-**SQL-injection assessment** is non-destructive and evidence-based. It takes a
-baseline, then sends structured diagnostics — quote/paren syntax breakers and an
-`AND '1'='1'`/`'1'='2'` boolean differential (no `OR`-bypass, no `--`/`#`
-comments, no stacked `;` queries, no `UNION` data extraction, no auth bypass).
-It reports:
+MURS ngecek SQLi pakai cara yang **aman dan berbasis bukti**:
 
-- **error-based indication** — a *DB-specific* error signature appears that was
-  absent in the baseline (a generic 500 or the word "error" is never enough);
-- **boolean-based indication** — true vs false conditions produce a consistent,
-  significant response differential;
-- **not injectable / inconclusive / not testable** otherwise.
+- Ambil respons baseline dulu, baru kirim probe diagnostik: tanda petik /
+  kurung buat mancing error, sama pembanding boolean `AND '1'='1'` vs `'1'='2'`.
+- Nggak pakai `OR 1=1` buat bypass login, nggak pakai komentar `--`/`#`, nggak
+  pakai query bertumpuk `;`, nggak narik data pakai `UNION`.
+- Yang dilaporin: **error-based** (muncul error khas DB yang di baseline nggak
+  ada — bukan sekadar 500) atau **boolean-based** (beda respons true vs false).
+- Nggak pernah nyimpulin SQLi cuma dari status HTTP atau error generik.
 
-It never concludes injection from an HTTP status or a generic error, and an
-outcome is only **confirmed** inside the bundled `sqli_vuln` lab. On an external
-target, results are indications (High / Potential) for manual confirmation —
-confirm safely in the local lab or an explicitly-provided staging environment,
-and never extract/alter data or bypass authentication on production.
+Jadi dia bilang "ini kemungkinan rentan dan ini buktinya", bukan "ayo saya
+masukin ke dalam". Buat ngebuktiin eksploitasinya, pakai lab lokal.
 
-**Request scheduling.** SQLi probes run through a scheduler with a configurable
-inter-request delay (default **2s**), a global and optional **per-host** request
-budget, and polite back-off: on HTTP 429 it pauses and honours `Retry-After`
-(bounded), and it never rotates identity to evade throttling.
+## Laporan PDF & retest
 
-### Generating the PDF
+PDF-nya kebuat otomatis (kecuali `--no-pdf`). Isinya cover, identitas project,
+ringkasan, scope + batasan, daftar endpoint, matriks hasil upload, halaman login
++ hasil SQLi (kalau dijalanin), temuan terverifikasi vs potensial, detail tiap
+temuan (bukti, dampak, langkah reproduksi aman, saran perbaikan), prioritas
+perbaikan, hasil retest, sampai lampiran teknis. Ada nomor halaman + metadata.
 
-The PDF is produced automatically unless `--no-pdf` is passed. It includes a
-cover, project identity, executive summary, scope and limits, methodology,
-severity summary, endpoints examined, the upload outcome matrix, discovered
-login pages and the SQL-injection outcome table (when those run), verified vs
-potential findings, full per-finding detail (evidence, impact, safe
-reproduction, remediation), remediation priority, retest results, conclusion,
-and a technical appendix —
-with page numbers, header/footer, and document metadata. The output path is
-printed only after the file is written.
-
-### Retesting after a fix
+Retest buat bandingin sebelum/sesudah fix:
 
 ```bash
-# 1. baseline the current state
-python -m murs https://your-site.example --save-findings baseline.json
-# 2. after remediation, compare
-python -m murs https://your-site.example --retest-baseline baseline.json
+python -m murs https://situs-kamu.example --save-findings baseline.json
+# ... setelah diperbaiki ...
+python -m murs https://situs-kamu.example --retest-baseline baseline.json
 ```
 
-Findings are matched by a stable ID derived from category + host + path, so a
-retest of the same deployment reports each prior finding as **Fixed** or **Still
-Present**, and surfaces **New** ones. (Demo: baseline `--lab vuln`, then retest
-`--lab patched` — the execution finding reads as Fixed.)
+## Ngatur kecepatan request
+
+Khusus uji SQLi ada scheduler-nya: jeda antar-request bisa diatur (default **2
+detik**), ada batas request global + per-host, dan kalau server balas **429**
+dia berhenti bentar sambil hormatin `Retry-After`. Nggak ada akal-akalan ganti
+identitas buat ngakalin limit server.
 
 ## Testing
 
@@ -292,39 +174,28 @@ Present**, and surfaces **New** ones. (Demo: baseline `--lab vuln`, then retest
 python -m unittest discover -s tests -v
 ```
 
-The suite uses a local HTTP fixture and the PHP lab — no third-party sites.
-Tests that need `php` are skipped (not failed) when it is absent, and report as
-skipped.
+Test-nya pakai fixture lokal sama lab PHP, jadi nggak nyentuh situs pihak
+ketiga. Yang butuh `php` bakal di-skip (bukan gagal) kalau php-nya nggak ada.
 
-## Troubleshooting
+## Keterbatasan (yang jujur aja)
 
-- **"reportlab not installed"** — `python -m pip install -r requirements.txt`.
-  MURS still runs discovery/upload; only the PDF is skipped.
-- **"blocker: target refused by SSRF guard"** — the target resolves to a
-  private/reserved address. That is intended. Use `--allow-private` only for
-  local labs you control.
-- **"blocker: the php CLI was not found"** — install php to use `--lab`.
-- **"request budget reached"** — raise `--max-requests`.
+- Discovery jalan satu-satu (serial) di bawah rate limit; opsi `concurrency`
+  masih disimpen buat nanti, belum paralel.
+- DNS rebinding udah dikurangin (socket di-pin ke IP yang udah divalidasi, jawaban
+  DNS campur publik/privat ditolak), tapi cache poisoning level OS di luar
+  kendali tool.
+- Nggak ngejalanin JavaScript, jadi app yang full SPA bisa kelewat — ini
+  dilaporin, nggak disembunyiin.
+- Lokasi file upload cuma dianggap valid kalau markernya beneran ke-ambil;
+  tebakan path nggak pernah dilaporin sebagai "confirmed".
+- Lab buktiin eksekusi buat kasus **PHP** doang.
 
-## Limitations (honest)
+## Scope & etika
 
-- Discovery issues requests **serially** under the rate limit; the `concurrency`
-  config value is reserved and not yet parallelised.
-- **DNS rebinding** is mitigated by pinning the socket to a validated IP (and
-  refusing mixed public/private answers), covered by tests. The residual risk is
-  a resolver/OS-level cache poisoning between validation and connect, which is
-  outside the client's control.
-- Discovery is link/wordlist based; it does not execute JavaScript, so SPA-only
-  routes may be missed — this is reported, not hidden.
-- The upload module confirms a stored location only by **retrieving the unique
-  marker**. Paths it tries but cannot confirm are kept as *candidates* and never
-  reported as the stored file; if the app hides the location, the result is
-  *location not determined*.
-- The lab proves execution risk for the **PHP** case; other interpreters are not
-  modelled.
+MURS ini buat orang yang **punya izin** buat nge-tes sistemnya. Dia nggak ngasih
+izin itu. Jalanin cuma ke sistem yang kamu punya atau yang emang dibolehin.
+Nyerang sistem orang tanpa izin itu bisa kena masalah hukum — tanggung jawab ada
+di kamu.
 
-## Scope and intent
-
-MURS is a tool for people with authorization to test a system. Running it
-against systems you neither own nor are permitted to test may be illegal. The
-authors provide it for authorized research, teaching, and remediation validation.
+Dan khusus bagian lab `vuln`/`sqli_vuln`: itu sengaja dibikin rapuh buat
+latihan, jadi jangan di-deploy ke tempat yang bisa diakses publik.
