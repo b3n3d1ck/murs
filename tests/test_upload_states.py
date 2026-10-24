@@ -76,6 +76,28 @@ class TestUploadStates(unittest.TestCase):
             self.assertEqual(at.outcome, OUT_EXECUTION_UNCONFIRMED)
             self.assertIsNone(at.execution_url)
 
+    def test_public_stored_url_is_verified_by_marker(self):
+        with FixtureServer() as s:
+            at = php_attempt(s, "/upload")
+            self.assertTrue(at.storage_confirmed)
+            self.assertTrue(at.storage_location_observed)
+            self.assertIsNotNone(at.stored_location)
+
+    def test_access_controlled_does_not_claim_a_stored_location(self):
+        with FixtureServer() as s:
+            at = php_attempt(s, "/upload-protected")
+            # a 401 candidate must NOT be reported as the confirmed file
+            self.assertIsNone(at.stored_location)
+            self.assertFalse(at.storage_confirmed)
+            self.assertIn("access_controlled_candidate", at.evidence)
+
+    def test_hidden_location_records_candidates_but_confirms_nothing(self):
+        with FixtureServer() as s:
+            at = php_attempt(s, "/upload-nolocation")
+            self.assertTrue(at.candidate_urls, "candidates should be tried")
+            self.assertIsNone(at.stored_location)   # none confirmed
+            self.assertFalse(at.storage_confirmed)
+
     def test_no_execution_url_unless_confirmed_across_all_states(self):
         # the invariant: an execution URL is only ever present on a confirmed run
         for action in ("/upload", "/upload-reject", "/upload-protected",

@@ -1,25 +1,34 @@
 """A scope-bound, SSRF-guarded HTTP client built on the standard library.
 
-Design choices that matter for safety:
-  * Every request is checked against the scope (host/port/scheme) first.
-  * The target host is resolved and validated against the SSRF policy before a
-    request is sent; private/reserved destinations are refused.
-  * Redirects are NOT followed automatically — each hop is re-validated.
-  * Bodies are read up to a hard cap; the socket is closed past it.
-  * A global request budget and a rate limit bound total activity.
+Safety properties:
+  * Scope (host/port/scheme) is checked before any connection.
+  * The host is resolved, every resolved address is validated against the SSRF
+    policy, and the socket is then **pinned to a validated IP** — the hostname
+    is never re-resolved during connect, so a DNS-rebinding answer cannot swap
+    in a private address. Mixed public/private answers fail closed.
+  * TLS keeps the original hostname for SNI and certificate verification.
+  * Redirects are followed manually with correct per-status-code method/body
+    semantics; each hop is re-validated, and credentials are dropped when the
+    host changes.
+  * Bodies are capped; a global request budget and a rate limit bound activity.
 
-`allow_private=True` is an explicit opt-in used only by the bundled localhost
-lab and the test fixtures. External assessments always run with it False.
+Private/loopback targets are refused unless the host is in `private_hosts`
+(explicitly approved local labs) — there is no global private-network bypass.
 """
 
 from __future__ import annotations
 
 import http.client
+import socket
 import ssl
 import time
 from dataclasses import dataclass, field
 
-from .netutil import Target, normalize_url, in_scope, check_host_safe
+from .netutil import (
+    Target, normalize_url, in_scope, resolve_and_pin,
+)
+
+_SENSITIVE_HEADERS = {"authorization", "cookie", "proxy-authorization"}
 
 
 @dataclass
@@ -36,6 +45,7 @@ class Response:
     blocked: bool = False
     reason: str = ""
     truncated: bool = False
+    pinned_ip: str = ""
 
     @property
     def ok(self) -> bool:
@@ -53,6 +63,40 @@ class RequestBudgetExceeded(Exception):
     pass
 
 
+# --------------------------------------------------------- pinned connections
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host, port, pinned_ip, timeout):
+        super().__init__(host, port, timeout=timeout)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        # connect to the already-validated IP; self.host stays the hostname so
+        # the Host header is correct and no re-resolution happens.
+        self.sock = socket.create_connection(
+            (self._pinned_ip, self.port), self.timeout, self.source_address
+        )
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, port, pinned_ip, timeout, context):
+        super().__init__(host, port, timeout=timeout, context=context)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        sock = socket.create_connection(
+            (self._pinned_ip, self.port), self.timeout, self.source_address
+        )
+        if self._tunnel_host:
+            self.sock = sock
+            self._tunnel()
+            sock = self.sock
+        # SNI + certificate verification use the hostname, not the pinned IP.
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
 class HttpClient:
     def __init__(
         self,
@@ -66,6 +110,8 @@ class HttpClient:
         rate_limit_per_sec: float = 8.0,
         max_requests: int = 300,
         allow_private: bool = False,
+        private_hosts: set[str] | None = None,
+        auth_headers: dict[str, str] | None = None,
         user_agent: str = "MURS/1.0 (+authorized-research)",
     ) -> None:
         self.allowed_hosts = allowed_hosts
@@ -76,7 +122,16 @@ class HttpClient:
         self.max_response_bytes = max_response_bytes
         self.min_interval = 1.0 / rate_limit_per_sec if rate_limit_per_sec > 0 else 0.0
         self.max_requests = max_requests
-        self.allow_private = allow_private
+        # scope the private bypass: only these hosts skip the SSRF policy.
+        if private_hosts is not None:
+            self.private_hosts = {h.lower() for h in private_hosts}
+        elif allow_private:
+            self.private_hosts = {h.lower() for h in allowed_hosts}
+        else:
+            self.private_hosts = set()
+        # user-supplied auth (e.g. a test session cookie); sent only in scope,
+        # never stored on responses or written to reports.
+        self.auth_headers = dict(auth_headers or {})
         self.user_agent = user_agent
         self.count = 0
         self._last_ts = 0.0
@@ -95,17 +150,22 @@ class HttpClient:
         follow: bool = True,
         max_redirects: int = 5,
     ) -> Response:
-        history: list[tuple[str, int]] = []
         current = target
+        # auth headers are attached here (not in _single) so a host change in a
+        # redirect drops them, never forwarding credentials to another host.
+        hdrs = dict(headers or {})
+        hdrs.update(self.auth_headers)
+        strip_keys = _SENSITIVE_HEADERS | {k.lower() for k in self.auth_headers}
+        sent_body = body
+        history: list[tuple[str, int]] = []
         for _ in range(max_redirects + 1):
-            resp = self._single(method, current, headers=headers, body=body)
+            resp = self._single(method, current, headers=hdrs, body=sent_body)
             resp.history = list(history)
             if not resp.ok or not follow or not (300 <= resp.status < 400):
                 return resp
             loc = resp.header("location")
             if not loc:
                 return resp
-            history.append((current.url, resp.status))
             nxt = _resolve_redirect(current, loc)
             if nxt is None:
                 resp.reason = "redirect target unparseable; not followed"
@@ -114,9 +174,10 @@ class HttpClient:
             if not ok:
                 resp.reason = f"redirect left scope ({why}); not followed"
                 return resp
-            # subsequent hops become GET without the original body (standard)
-            method, current, body = "GET", nxt, None
-        # too many redirects
+            history.append((current.url, resp.status))
+            method, sent_body, hdrs = _redirect_next(resp.status, method, sent_body, hdrs,
+                                                      current.host, nxt.host, strip_keys)
+            current = nxt
         resp.reason = "too many redirects"
         return resp
 
@@ -129,11 +190,12 @@ class HttpClient:
             out.blocked, out.reason = True, f"out of scope: {why}"
             return out
 
-        if not self.allow_private:
-            chk = check_host_safe(target.host)
-            if not chk.allowed:
-                out.blocked, out.reason = True, f"ssrf guard: {chk.reason}"
-                return out
+        private_ok = target.host.lower() in self.private_hosts
+        pinned_ip, reason, _all = resolve_and_pin(target.host, private_ok=private_ok)
+        if pinned_ip is None:
+            out.blocked, out.reason = True, f"ssrf guard: {reason}"
+            return out
+        out.pinned_ip = pinned_ip
 
         if self.count >= self.max_requests:
             out.blocked, out.reason = True, "request budget exceeded"
@@ -142,28 +204,30 @@ class HttpClient:
         self._throttle()
         self.count += 1
 
+        req_headers = {
+            "Host": target.host,
+            "User-Agent": self.user_agent,
+            "Accept": "*/*",
+            "Connection": "close",
+        }
+        # auth is injected by request() into `headers`, so it is dropped on a
+        # host change rather than re-added here on every hop.
+        if headers:
+            req_headers.update(headers)
+
         last_err = None
+        started = time.monotonic()
         for attempt in range(self.retries + 1):
             started = time.monotonic()
             conn = None
             try:
                 if target.scheme == "https":
                     ctx = ssl.create_default_context()
-                    conn = http.client.HTTPSConnection(
-                        target.host, target.port, timeout=self.timeout, context=ctx
-                    )
+                    conn = _PinnedHTTPSConnection(target.host, target.port, pinned_ip,
+                                                  self.timeout, ctx)
                 else:
-                    conn = http.client.HTTPConnection(
-                        target.host, target.port, timeout=self.timeout
-                    )
-                req_headers = {
-                    "Host": target.host,
-                    "User-Agent": self.user_agent,
-                    "Accept": "*/*",
-                    "Connection": "close",
-                }
-                if headers:
-                    req_headers.update(headers)
+                    conn = _PinnedHTTPConnection(target.host, target.port, pinned_ip,
+                                                 self.timeout)
                 conn.request(method, target.path or "/", body=body, headers=req_headers)
                 r = conn.getresponse()
                 out.status = r.status
@@ -199,6 +263,22 @@ class HttpClient:
         if wait > 0:
             time.sleep(wait)
         self._last_ts = time.monotonic()
+
+
+def _redirect_next(status, method, body, headers, old_host, new_host, strip_keys):
+    """Apply correct per-code redirect semantics and strip creds across hosts."""
+    method = method.upper()
+    if status in (301, 302):
+        if method not in ("GET", "HEAD"):
+            method, body = "GET", None
+    elif status == 303:
+        if method != "HEAD":
+            method, body = "GET", None
+    # 307 / 308: preserve method and body verbatim
+    hdrs = dict(headers or {})
+    if new_host.lower() != old_host.lower():
+        hdrs = {k: v for k, v in hdrs.items() if k.lower() not in strip_keys}
+    return method, body, hdrs
 
 
 def _resolve_redirect(base: Target, location: str) -> Target | None:

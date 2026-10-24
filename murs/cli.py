@@ -42,6 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-pdf", action="store_true", help="skip PDF generation")
     p.add_argument("--save-findings", help="write findings JSON (for later retest)")
     p.add_argument("--retest-baseline", help="compare against a saved findings JSON")
+    p.add_argument("--auth-cookie", action="append", default=[], metavar="NAME=VALUE",
+                   help="send a test session cookie (repeatable); kept in scope, "
+                        "never written to the report")
+    p.add_argument("--auth-header", action="append", default=[], metavar="NAME:VALUE",
+                   help="send an auth header, e.g. 'Authorization: Bearer ...' "
+                        "(repeatable); never written to the report")
     p.add_argument("--lab", choices=("vuln", "patched"),
                    help="run against the bundled localhost lab instead of a URL")
     p.add_argument("--allow-private", action="store_true",
@@ -79,6 +85,24 @@ def _make_config(args) -> ScanConfig:
     return cfg
 
 
+def _build_auth_headers(args) -> dict:
+    """Build auth headers from --auth-cookie / --auth-header. Values are never
+    echoed; only header names are ever shown to the user."""
+    headers: dict[str, str] = {}
+    cookies = []
+    for c in args.auth_cookie:
+        if "=" in c:
+            cookies.append(c.strip())
+    if cookies:
+        headers["Cookie"] = "; ".join(cookies)
+    for h in args.auth_header:
+        if ":" in h:
+            name, _, value = h.partition(":")
+            if name.strip():
+                headers[name.strip()] = value.strip()
+    return headers
+
+
 def _print_scope(ui: MatrixUI, cfg: ScanConfig, allow_private: bool) -> None:
     ui.head("Target and scope (review before active assessment)")
     ui.kv("Final URL", cfg.base_url)
@@ -89,7 +113,8 @@ def _print_scope(ui: MatrixUI, cfg: ScanConfig, allow_private: bool) -> None:
     ui.kv("Mode", cfg.mode)
     ui.kv("Max requests", str(cfg.max_requests))
     ui.kv("Rate limit", f"{cfg.rate_limit_per_sec}/s")
-    ui.kv("SSRF guard", "OFF (private allowed)" if allow_private else "ON")
+    ui.kv("SSRF guard", "ON (private bypass scoped to approved hosts)"
+          if allow_private else "ON")
 
 
 def _print_findings(ui: MatrixUI, findings) -> None:
@@ -154,9 +179,16 @@ def main(argv=None) -> int:
 
         _print_scope(ui, cfg, allow_private)
 
+        # assemble an optional, user-supplied auth profile (never logged verbatim)
+        auth_headers = _build_auth_headers(args)
+        if auth_headers:
+            ui.line("info", f"auth profile supplied ({', '.join(sorted(auth_headers))}) "
+                            "— values hidden, kept in scope, excluded from the report")
+
         ui.head("Active assessment")
         try:
-            result = run_assessment(cfg, emit=ui.emit, allow_private=allow_private)
+            result = run_assessment(cfg, emit=ui.emit, allow_private=allow_private,
+                                    auth_headers=auth_headers)
         except Exception as e:  # pragma: no cover
             print(f"{RED}assessment error: {type(e).__name__}: {e}{R}")
             return 5

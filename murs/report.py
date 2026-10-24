@@ -236,16 +236,22 @@ class _DocMaker:
             s.append(Spacer(1, 3 * mm))
             s.append(_p("Upload probe outcomes", ParagraphStyle(
                 "sub", parent=ss["Body"], fontName="Helvetica-Bold", fontSize=10)))
-            rows = [["Endpoint", "Probe", "Outcome", "Execution URL"]]
+            rows = [["Upload endpoint", "Probe", "Outcome", "Stored URL (verified)",
+                     "Execution URL"]]
             for a in d.upload_attempts:
                 rows.append([
                     a.endpoint, a.probe_kind, a.outcome_label,
-                    # requirement 9: only ever shown when execution was confirmed
+                    # only a marker-verified location is shown as the stored URL
+                    a.stored_location or "— (not confirmed)",
+                    # only ever shown when execution was actually observed
                     a.execution_url or "— (not confirmed)",
                 ])
-            s.append(_table(rows, [48 * mm, 26 * mm, 50 * mm, 41 * mm], ss))
-            s.append(_p("An execution URL is listed only where code execution was "
-                        "actually observed and verified.", ss["Small"]))
+            s.append(_table(rows, [36 * mm, 22 * mm, 42 * mm, 33 * mm, 32 * mm], ss))
+            s.append(_p("URL legend — Upload endpoint: where the probe was POSTed. "
+                        "Stored URL: shown only when the unique inert marker was "
+                        "actually retrieved there. Execution URL: shown only when the "
+                        "evaluated marker was observed. Unverified candidate paths are "
+                        "never listed as confirmed results.", ss["Small"]))
 
         # 6. Verified findings
         s.append(_p("6. Verified findings", ss["H1"]))

@@ -91,9 +91,12 @@ class TestReport(unittest.TestCase):
                             out_dir=self.tmp)
         txt = subprocess.run(["pdftotext", path, "-"], capture_output=True,
                              text=True, check=True).stdout
+        # pdftotext wraps cell text, so assert on tokens that survive wrapping
         self.assertIn("Upload probe outcomes", txt)
-        self.assertIn("execution unconfirmed", txt)
-        self.assertIn("not confirmed", txt)  # execution URL column, unconfirmed
+        self.assertIn("interpretation", txt)
+        self.assertIn("unconfirmed", txt)
+        self.assertIn("not confirmed", txt)  # URL columns, unconfirmed
+        self.assertIn("Stored URL", txt)
 
 
 class TestRetest(unittest.TestCase):

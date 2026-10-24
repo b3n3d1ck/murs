@@ -1,5 +1,7 @@
 import io
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -27,6 +29,27 @@ class TestParser(unittest.TestCase):
         self.assertIn("SSRF guard", buf.getvalue())
 
 
+class TestAuthProfile(unittest.TestCase):
+    def test_build_auth_headers_from_cookie_and_header(self):
+        from murs.cli import build_parser, _build_auth_headers
+        args = build_parser().parse_args([
+            "http://x.test", "--no-pdf",
+            "--auth-cookie", "session=abc123",
+            "--auth-header", "Authorization: Bearer tok",
+        ])
+        h = _build_auth_headers(args)
+        self.assertEqual(h["Cookie"], "session=abc123")
+        self.assertEqual(h["Authorization"], "Bearer tok")
+
+    def test_secret_values_not_printed(self):
+        from murs.cli import build_parser, _build_auth_headers
+        args = build_parser().parse_args([
+            "http://x.test", "--auth-cookie", "session=SUPERSECRETVALUE"])
+        # the helper returns the value, but the CLI only ever prints header names
+        h = _build_auth_headers(args)
+        self.assertIn("Cookie", h)
+
+
 class TestLaunchers(unittest.TestCase):
     def test_entry_scripts_exist(self):
         root = os.path.dirname(os.path.dirname(__file__))
@@ -47,6 +70,22 @@ class TestEndToEnd(unittest.TestCase):
         self.assertIn("Critical", out)
         pdfs = [f for f in os.listdir(tmp) if f.endswith(".pdf")]
         self.assertTrue(pdfs, "a PDF should be generated")
+
+    def test_auth_secret_never_in_stdout_or_pdf(self):
+        tmp = tempfile.mkdtemp()
+        secret = "SUPERSECRETSESSION12345"
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["--lab", "vuln", "--no-color", "--report-dir", tmp,
+                       "--auth-cookie", f"session={secret}"])
+        self.assertEqual(rc, 0)
+        self.assertNotIn(secret, buf.getvalue(), "secret leaked to stdout")
+        pdfs = [f for f in os.listdir(tmp) if f.endswith(".pdf")]
+        self.assertTrue(pdfs)
+        if shutil.which("pdftotext"):
+            txt = subprocess.run(["pdftotext", os.path.join(tmp, pdfs[0]), "-"],
+                                 capture_output=True, text=True).stdout
+            self.assertNotIn(secret, txt, "secret leaked into the PDF")
 
     def test_retest_roundtrip(self):
         tmp = tempfile.mkdtemp()

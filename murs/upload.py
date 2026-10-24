@@ -19,7 +19,7 @@ import secrets
 from dataclasses import dataclass, field
 
 from .httpclient import HttpClient
-from .netutil import normalize_url, Target
+from .netutil import normalize_url, Target, redact_secrets
 
 PNG_HEADER = bytes.fromhex("89504E470D0A1A0A")
 
@@ -74,10 +74,30 @@ class UploadAttempt:
     access_controlled: bool | None = None  # fetch denied (401/403)?
     interpreted: bool | None = None       # server processed it as code?
     executed: bool | None = None          # evaluated marker returned? (proof)
+    storage_confirmed: bool = False       # marker actually retrieved?
     outcome: str = OUT_NOT_SENT           # single, explicit ladder state
+    # stored_location is set ONLY when the unique marker was retrieved there.
+    # candidate_urls are paths we tried but did NOT confirm hold our file.
+    candidate_urls: list = field(default_factory=list)
     execution_url: str | None = None      # set ONLY when execution is confirmed
     evidence: dict = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+
+    @property
+    def request_sent(self) -> bool:
+        return self.sent
+
+    @property
+    def upload_request_accepted(self) -> bool | None:
+        return self.accepted
+
+    @property
+    def storage_location_observed(self) -> bool:
+        return self.stored_location is not None
+
+    @property
+    def file_retrievable(self) -> bool | None:
+        return self.accessible
 
     @property
     def outcome_label(self) -> str:
@@ -180,7 +200,7 @@ class UploadModule:
         at.sent = True
         at.http_status = resp.status
         at.evidence["upload_status"] = resp.status
-        at.evidence["upload_snippet"] = resp.text[:300]
+        at.evidence["upload_snippet"] = redact_secrets(resp.text, 300)
         # "accepted" is a *tentative* read of the response, never proof on its own
         at.accepted = resp.status in (200, 201, 204) and "error" not in resp.text.lower() \
             and "reject" not in resp.text.lower()
@@ -197,26 +217,29 @@ class UploadModule:
     def _locate_and_classify(self, resp, probe: UploadProbe, at: UploadAttempt) -> None:
         """Fetch the stored file (same-scope) and set the explicit outcome."""
         is_code = probe.executed_signature is not None
+        access_controlled_candidate = None
         for url in _candidate_locations(self.base, resp.text, probe.filename):
             try:
                 t = normalize_url(url)
             except ValueError:
                 continue
+            at.candidate_urls.append(url)
             got = self.client.get(t, follow=False)
             if got.blocked:
                 continue
             if got.status in (401, 403):
-                at.stored_location = url
-                at.accessible = False
-                at.access_controlled = True
-                at.evidence["fetch_status"] = got.status
-                at.outcome = OUT_ACCESS_CONTROLLED
-                return
+                # a candidate path is access-controlled. We did NOT verify it
+                # holds our file (no marker retrieved), so it stays a candidate,
+                # never a confirmed stored location.
+                access_controlled_candidate = (url, got.status)
+                continue
             body = got.text
             has_raw = f"inert-marker:{probe.token}" in body
             has_exec = bool(probe.executed_signature and probe.executed_signature in body)
             if got.status == 200 and (has_raw or has_exec):
+                # confirmed: the unique marker was actually retrieved here.
                 at.stored_location = url
+                at.storage_confirmed = True
                 at.accessible = True
                 at.access_controlled = False
                 at.evidence["fetch_status"] = got.status
@@ -246,7 +269,17 @@ class UploadModule:
                     at.outcome = OUT_INTERPRETED_UNCONFIRMED
                     at.notes.append("server processed the file but execution was not confirmed")
                 return
-        # nothing retrievable
+        # nothing confirmed by marker retrieval
+        if access_controlled_candidate is not None:
+            url, status = access_controlled_candidate
+            at.accessible = False
+            at.access_controlled = True
+            at.evidence["access_controlled_candidate"] = url
+            at.evidence["fetch_status"] = status
+            at.outcome = OUT_ACCESS_CONTROLLED
+            at.notes.append("a candidate upload path is access-controlled; "
+                            "file identity not verified (marker not retrieved)")
+            return
         at.accessible = None
         if is_code:
             at.outcome = OUT_EXECUTION_UNCONFIRMED

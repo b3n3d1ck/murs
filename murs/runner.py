@@ -46,7 +46,8 @@ def prepare(cfg: ScanConfig) -> Target:
     return t
 
 
-def run_assessment(cfg: ScanConfig, emit=None, allow_private: bool = False) -> RunResult:
+def run_assessment(cfg: ScanConfig, emit=None, allow_private: bool = False,
+                   auth_headers: dict | None = None) -> RunResult:
     emit = emit or (lambda k, m: None)
     base = prepare(cfg)
     started = _now()
@@ -60,8 +61,12 @@ def run_assessment(cfg: ScanConfig, emit=None, allow_private: bool = False) -> R
         rate_limit_per_sec=cfg.rate_limit_per_sec,
         max_requests=cfg.max_requests,
         allow_private=allow_private,
+        auth_headers=auth_headers or None,
     )
     notes: list[str] = []
+    if auth_headers:
+        emit("info", "using a supplied authentication profile (kept in scope, "
+                     "never written to the report)")
 
     emit("info", f"discovery starting on {base.url}")
     discovery = DiscoveryEngine(cfg, client, emit).run()
@@ -89,6 +94,13 @@ def run_assessment(cfg: ScanConfig, emit=None, allow_private: bool = False) -> R
 
     findings = FindingEngine(tested_at=_now()).build(discovery, upload_attempts)
     emit("ok", f"{len(findings)} finding(s) classified")
+
+    # be explicit about what could not be assessed without authentication
+    auth_required = [e for e in discovery.endpoints if e.classification == "auth-required"]
+    if auth_required and not auth_headers:
+        notes.append(f"{len(auth_required)} endpoint(s) required authentication and "
+                     "were not assessed (no authentication profile was supplied).")
+        emit("warn", f"{len(auth_required)} endpoint(s) require auth; not assessed")
 
     notes.extend(discovery.notes)
     return RunResult(

@@ -64,6 +64,17 @@ class TestLab(unittest.TestCase):
         self.assertNotEqual(ev, ep)
 
 
+@unittest.skipUnless(php_available(), "php CLI not available")
+class TestLabBindSafety(unittest.TestCase):
+    def test_lab_binds_loopback_only(self):
+        lab = LabServer("vuln")
+        self.assertEqual(lab.host, "127.0.0.1")
+        # the launch command must target 127.0.0.1, never 0.0.0.0 / a public IP
+        with lab as running:
+            self.assertEqual(running.host, "127.0.0.1")
+            self.assertTrue(running.base.startswith("http://127.0.0.1:"))
+
+
 class TestLabUnavailable(unittest.TestCase):
     def test_raises_when_php_missing(self):
         if php_available():

@@ -69,6 +69,12 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(302, b"", extra={"Location": "/about"})
         if path == "/redirect-out":
             return self._send(302, b"", extra={"Location": "https://external.example/x"})
+        redirect_codes = {"/r301": 301, "/r302": 302, "/r303": 303,
+                          "/r307": 307, "/r308": 308}
+        if path in redirect_codes:
+            return self._send(redirect_codes[path], b"", extra={"Location": "/echo"})
+        if path == "/echo":
+            return self._send(200, b"METHOD=GET BODYLEN=0")
         if path.startswith("/uploads/"):
             name = path[len("/uploads/"):]
             if name in type(self).stored:
@@ -104,6 +110,12 @@ class _Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b""
         if path == "/login":
             return self._send(200, b"<title>Login</title>invalid credentials")
+        redirect_codes = {"/r301": 301, "/r302": 302, "/r303": 303,
+                          "/r307": 307, "/r308": 308}
+        if path in redirect_codes:
+            return self._send(redirect_codes[path], b"", extra={"Location": "/echo"})
+        if path == "/echo":
+            return self._send(200, f"METHOD=POST BODYLEN={len(raw)}".encode())
         name, data = _parse_first_file(self.headers.get("Content-Type", ""), raw)
         if path == "/upload":
             if name is None:

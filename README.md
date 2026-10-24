@@ -81,7 +81,32 @@ URL and scope** before the active phase, then runs discovery and (in
 `assessment` mode) upload probing. A PDF lands in `reports/`.
 
 Private/loopback targets are refused by the SSRF guard. For a self-hosted local
-test target you control, add `--allow-private`.
+test target you control, add `--allow-private` — this approves **only the hosts
+in scope**, not a blanket private-network bypass (a redirect to any other
+private address is still refused).
+
+The client resolves the host, validates every resolved IPv4/IPv6 address, and
+**pins the socket to a validated IP** so the hostname cannot be re-resolved to a
+private address mid-connection (DNS-rebinding resistance). HTTPS still verifies
+the certificate and SNI against the original hostname. Redirects are followed
+with correct per-code semantics (301/302/303 → GET, 307/308 preserve
+method+body) and credentials are dropped when the host changes.
+
+### Authenticated assessment (optional)
+
+For targets you're authorized to test that need a session, supply your own:
+
+```bash
+python -m murs https://your-site.example \
+  --auth-cookie "session=<your-test-session>" \
+  --auth-header "Authorization: Bearer <token>"
+```
+
+MURS never acquires credentials itself and never bypasses authentication. The
+values you supply are sent only to in-scope hosts, are **excluded from the PDF
+and from logs** (only header *names* are ever shown), and are dropped on a
+cross-host redirect. Endpoints that still require authentication are listed as
+not-assessed rather than treated as findings.
 
 ### Setting scope
 
@@ -189,14 +214,16 @@ skipped.
 
 - Discovery issues requests **serially** under the rate limit; the `concurrency`
   config value is reserved and not yet parallelised.
-- **DNS rebinding** is only partially mitigated: the host is validated at check
-  time, but the standard-library client cannot pin the socket to the validated
-  IP for the subsequent request.
+- **DNS rebinding** is mitigated by pinning the socket to a validated IP (and
+  refusing mixed public/private answers), covered by tests. The residual risk is
+  a resolver/OS-level cache poisoning between validation and connect, which is
+  outside the client's control.
 - Discovery is link/wordlist based; it does not execute JavaScript, so SPA-only
-  routes may be missed.
-- The upload module derives the stored location from the response and a few
-  common paths; if the app hides it, the result is reported as *location not
-  determined* rather than guessed.
+  routes may be missed — this is reported, not hidden.
+- The upload module confirms a stored location only by **retrieving the unique
+  marker**. Paths it tries but cannot confirm are kept as *candidates* and never
+  reported as the stored file; if the app hides the location, the result is
+  *location not determined*.
 - The lab proves execution risk for the **PHP** case; other interpreters are not
   modelled.
 

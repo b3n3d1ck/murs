@@ -7,6 +7,7 @@ provably global (public) address is treated as out of scope and not requested.
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit, quote
@@ -158,3 +159,53 @@ def in_scope(target: Target, allowed_hosts: set[str], allowed_ports: set[int],
 def safe_path(path: str) -> str:
     """Percent-encode a path for a request line, keeping common URL chars."""
     return quote(path, safe="/-._~!$&'()*+,;=:@%?#[]")
+
+
+def is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_and_pin(host: str, private_ok: bool = False) -> tuple[str | None, str, tuple[str, ...]]:
+    """Resolve + validate a host and return (pinned_ip, reason, all_ips).
+
+    pinned_ip is the single address the caller must connect to; it is None when
+    the host is blocked. Fails closed. When `private_ok` is True the host is an
+    approved local target and the SSRF policy is skipped *for this host only*.
+    """
+    if is_ip_literal(host):
+        if private_ok:
+            return host, "approved private literal", (host,)
+        if ip_is_disallowed(host):
+            return None, "literal IP is private/reserved", (host,)
+        return host, "ok (public literal)", (host,)
+    ips = resolve_host(host)
+    if not ips:
+        return None, "host does not resolve", ()
+    if private_ok:
+        return ips[0], "approved private host", tuple(ips)
+    # mixed answers: if ANY resolved address is non-global, refuse (rebinding).
+    bad = [ip for ip in ips if ip_is_disallowed(ip)]
+    if bad:
+        return None, f"resolves to non-global address: {bad[0]}", tuple(ips)
+    return ips[0], "ok", tuple(ips)
+
+
+_SECRET_RE = re.compile(
+    r"(?i)\b(authorization|cookie|set-cookie|token|passwd|password|secret|api[_-]?key|session)"
+    r"(\s*[:=]\s*)([^\s;,&\"']{4,})"
+)
+_LONG_B64 = re.compile(r"\b[A-Za-z0-9+/_-]{24,}={0,2}\b")
+
+
+def redact_secrets(text: str, limit: int = 600) -> str:
+    """Mask credential-like values before anything is logged or reported."""
+    if not text:
+        return ""
+    t = text[:limit]
+    t = _SECRET_RE.sub(lambda m: m.group(1) + m.group(2) + "[REDACTED]", t)
+    t = _LONG_B64.sub("[REDACTED]", t)
+    return t
