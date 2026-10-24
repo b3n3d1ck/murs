@@ -87,26 +87,48 @@ private address is still refused).
 
 The client resolves the host, validates every resolved IPv4/IPv6 address, and
 **pins the socket to a validated IP** so the hostname cannot be re-resolved to a
-private address mid-connection (DNS-rebinding resistance). HTTPS still verifies
-the certificate and SNI against the original hostname. Redirects are followed
-with correct per-code semantics (301/302/303 → GET, 307/308 preserve
-method+body) and credentials are dropped when the host changes.
+private address mid-connection (DNS-rebinding resistance; covered by a test that
+asserts the socket connects to the validated IP and the host is resolved only
+once). HTTPS still verifies the certificate and uses SNI for the original
+hostname. Redirects are followed with correct per-code semantics (301/302/303 →
+GET, 307/308 preserve method+body) and credentials are dropped on any origin
+change. Query strings are preserved on the wire (the fragment is never sent),
+and IPv6 literals are bracketed correctly in the authority and `Host` header.
+
+The `--allow-private` lab exception is **loopback-only and fail-closed**: an
+approved host may resolve to `127.0.0.1`/`::1`, but if it resolves to a LAN
+address, link-local, or the cloud metadata service — or to a mix — the request
+is refused. Approving a hostname never means trusting whatever DNS returns.
 
 ### Authenticated assessment (optional)
 
 For targets you're authorized to test that need a session, supply your own:
 
 ```bash
+# safer: environment variables (not saved in shell history, not in the process
+# argument list the way flags are)
+export MURS_AUTH_COOKIE="session=<your-test-session>"
+export MURS_AUTH_HEADER="Authorization: Bearer <token>"
+python -m murs https://your-site.example
+
+# or as flags (convenient, but see the caveat below)
 python -m murs https://your-site.example \
   --auth-cookie "session=<your-test-session>" \
   --auth-header "Authorization: Bearer <token>"
 ```
 
 MURS never acquires credentials itself and never bypasses authentication. The
-values you supply are sent only to in-scope hosts, are **excluded from the PDF
-and from logs** (only header *names* are ever shown), and are dropped on a
-cross-host redirect. Endpoints that still require authentication are listed as
-not-assessed rather than treated as findings.
+values you supply are sent only to in-scope hosts, are **excluded from the PDF,
+the findings JSON, and logs** (only header *names* are ever shown), and are
+dropped whenever a redirect changes the **origin** (scheme, host, or port —
+including any HTTPS→HTTP downgrade). Endpoints that still require authentication
+are listed as not-assessed rather than treated as findings.
+
+> **Caveat (honest):** credentials passed as `--auth-*` **flags** are visible to
+> other local users through the process list and may be written to your shell
+> history. The env-var form avoids both. MURS does not, and cannot, secure the
+> input path before it reaches the process — only what it does with the value
+> afterward. This is not claimed to be audited end-to-end.
 
 ### Setting scope
 

@@ -54,6 +54,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+        if path == "/echo-query":
+            return self._send(200, f"QUERY={qs}".encode())
         if path == "/":
             return self._send(200, INDEX)
         if path == "/about":

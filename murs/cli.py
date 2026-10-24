@@ -86,16 +86,23 @@ def _make_config(args) -> ScanConfig:
 
 
 def _build_auth_headers(args) -> dict:
-    """Build auth headers from --auth-cookie / --auth-header. Values are never
-    echoed; only header names are ever shown to the user."""
+    """Build auth headers from --auth-cookie / --auth-header, or, when those are
+    absent, from the MURS_AUTH_COOKIE / MURS_AUTH_HEADER environment variables
+    (the safer path — env vars don't land in shell history the way flags do).
+    Values are never echoed; only header names are ever shown to the user."""
+    import os as _os
+
     headers: dict[str, str] = {}
-    cookies = []
-    for c in args.auth_cookie:
-        if "=" in c:
-            cookies.append(c.strip())
+    cookies = [c.strip() for c in args.auth_cookie if "=" in c]
+    if not cookies and _os.environ.get("MURS_AUTH_COOKIE"):
+        cookies = [_os.environ["MURS_AUTH_COOKIE"].strip()]
     if cookies:
         headers["Cookie"] = "; ".join(cookies)
-    for h in args.auth_header:
+
+    raw_headers = list(args.auth_header)
+    if not raw_headers and _os.environ.get("MURS_AUTH_HEADER"):
+        raw_headers = [_os.environ["MURS_AUTH_HEADER"]]
+    for h in raw_headers:
         if ":" in h:
             name, _, value = h.partition(":")
             if name.strip():
@@ -184,6 +191,12 @@ def main(argv=None) -> int:
         if auth_headers:
             ui.line("info", f"auth profile supplied ({', '.join(sorted(auth_headers))}) "
                             "— values hidden, kept in scope, excluded from the report")
+            if args.auth_cookie or args.auth_header:
+                # honest caveat: flag values are visible to other users via the
+                # process list and may be saved in shell history.
+                print(f"{YEL}note: credentials passed as CLI flags can be exposed "
+                      f"via shell history and process listings; prefer "
+                      f"MURS_AUTH_COOKIE / MURS_AUTH_HEADER env vars.{R}")
 
         ui.head("Active assessment")
         try:

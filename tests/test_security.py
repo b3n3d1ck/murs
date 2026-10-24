@@ -18,8 +18,38 @@ class TestResolveAndPin(unittest.TestCase):
         self.assertIsNone(ip)
 
     def test_private_literal_allowed_when_approved(self):
-        ip, reason, _ = resolve_and_pin("127.0.0.1", private_ok=True)
+        ip, reason, _ = resolve_and_pin("127.0.0.1", lab_private_ok=True)
         self.assertEqual(ip, "127.0.0.1")
+
+    def test_approved_host_resolving_to_non_loopback_is_blocked(self):
+        # finding 3: approval of a hostname must NOT trust whatever DNS returns;
+        # the lab exception is loopback-only.
+        orig = netutil.resolve_host
+        netutil.resolve_host = lambda h: ["169.254.169.254"]  # metadata service
+        try:
+            ip, reason, _ = resolve_and_pin("approved.lab", lab_private_ok=True)
+            self.assertIsNone(ip)
+            self.assertIn("loopback-only", reason)
+        finally:
+            netutil.resolve_host = orig
+
+    def test_approved_host_with_mixed_loopback_and_lan_blocked(self):
+        orig = netutil.resolve_host
+        netutil.resolve_host = lambda h: ["127.0.0.1", "192.168.1.10"]
+        try:
+            ip, _, _ = resolve_and_pin("approved.lab", lab_private_ok=True)
+            self.assertIsNone(ip, "mixed loopback/LAN under approval must fail closed")
+        finally:
+            netutil.resolve_host = orig
+
+    def test_approved_loopback_host_allowed(self):
+        orig = netutil.resolve_host
+        netutil.resolve_host = lambda h: ["127.0.0.1"]
+        try:
+            ip, _, _ = resolve_and_pin("localhost.lab", lab_private_ok=True)
+            self.assertEqual(ip, "127.0.0.1")
+        finally:
+            netutil.resolve_host = orig
 
     def test_hostname_pins_to_resolved_public(self):
         orig = netutil.resolve_host
@@ -100,36 +130,57 @@ class TestRedaction(unittest.TestCase):
 
 
 class TestRedirectSemantics(unittest.TestCase):
+    HTTPS_A = ("https", "a.test", 443)
+    HTTP_A = ("http", "a.test", 80)
+    HTTPS_A_8443 = ("https", "a.test", 8443)
+    HTTPS_B = ("https", "b.test", 443)
+
     def test_301_302_post_becomes_get(self):
         for code in (301, 302):
-            m, b, h = _redirect_next(code, "POST", b"data", {}, "a", "a", set())
+            m, b, h = _redirect_next(code, "POST", b"data", {}, self.HTTPS_A,
+                                     self.HTTPS_A, set())
             self.assertEqual(m, "GET")
             self.assertIsNone(b)
 
     def test_303_post_becomes_get(self):
-        m, b, h = _redirect_next(303, "POST", b"data", {}, "a", "a", set())
+        m, b, h = _redirect_next(303, "POST", b"data", {}, self.HTTPS_A,
+                                 self.HTTPS_A, set())
         self.assertEqual(m, "GET")
         self.assertIsNone(b)
 
     def test_307_308_preserve_method_and_body(self):
         for code in (307, 308):
-            m, b, h = _redirect_next(code, "POST", b"data", {}, "a", "a", set())
+            m, b, h = _redirect_next(code, "POST", b"data", {}, self.HTTPS_A,
+                                     self.HTTPS_A, set())
             self.assertEqual(m, "POST")
             self.assertEqual(b, b"data")
 
-    def test_credentials_dropped_on_host_change(self):
+    def test_credentials_kept_same_origin(self):
+        hdrs = {"Authorization": "Bearer x"}
+        _, _, h = _redirect_next(307, "GET", None, hdrs, self.HTTPS_A, self.HTTPS_A,
+                                 _SENSITIVE_HEADERS)
+        self.assertIn("Authorization", h)
+
+    def test_credentials_dropped_on_hostname_change(self):
         hdrs = {"Authorization": "Bearer x", "Cookie": "s=1", "X-Keep": "1"}
-        _, _, h = _redirect_next(302, "GET", None, hdrs, "a.test", "b.test",
+        _, _, h = _redirect_next(302, "GET", None, hdrs, self.HTTPS_A, self.HTTPS_B,
                                  _SENSITIVE_HEADERS)
         self.assertNotIn("Authorization", h)
         self.assertNotIn("Cookie", h)
         self.assertIn("X-Keep", h)
 
-    def test_credentials_kept_same_host(self):
+    def test_credentials_dropped_on_port_change(self):
         hdrs = {"Authorization": "Bearer x"}
-        _, _, h = _redirect_next(307, "GET", None, hdrs, "a.test", "a.test",
+        _, _, h = _redirect_next(307, "GET", None, hdrs, self.HTTPS_A,
+                                 self.HTTPS_A_8443, _SENSITIVE_HEADERS)
+        self.assertNotIn("Authorization", h)
+
+    def test_credentials_dropped_on_https_to_http_downgrade(self):
+        hdrs = {"Authorization": "Bearer x", "Cookie": "s=1"}
+        _, _, h = _redirect_next(307, "GET", None, hdrs, self.HTTPS_A, self.HTTP_A,
                                  _SENSITIVE_HEADERS)
-        self.assertIn("Authorization", h)
+        self.assertNotIn("Authorization", h)
+        self.assertNotIn("Cookie", h)
 
 
 def client_for(server):

@@ -175,8 +175,10 @@ class HttpClient:
                 resp.reason = f"redirect left scope ({why}); not followed"
                 return resp
             history.append((current.url, resp.status))
-            method, sent_body, hdrs = _redirect_next(resp.status, method, sent_body, hdrs,
-                                                      current.host, nxt.host, strip_keys)
+            method, sent_body, hdrs = _redirect_next(
+                resp.status, method, sent_body, hdrs,
+                (current.scheme, current.host, current.port),
+                (nxt.scheme, nxt.host, nxt.port), strip_keys)
             current = nxt
         resp.reason = "too many redirects"
         return resp
@@ -191,7 +193,7 @@ class HttpClient:
             return out
 
         private_ok = target.host.lower() in self.private_hosts
-        pinned_ip, reason, _all = resolve_and_pin(target.host, private_ok=private_ok)
+        pinned_ip, reason, _all = resolve_and_pin(target.host, lab_private_ok=private_ok)
         if pinned_ip is None:
             out.blocked, out.reason = True, f"ssrf guard: {reason}"
             return out
@@ -205,7 +207,7 @@ class HttpClient:
         self.count += 1
 
         req_headers = {
-            "Host": target.host,
+            "Host": target.host_header,
             "User-Agent": self.user_agent,
             "Accept": "*/*",
             "Connection": "close",
@@ -228,7 +230,7 @@ class HttpClient:
                 else:
                     conn = _PinnedHTTPConnection(target.host, target.port, pinned_ip,
                                                  self.timeout)
-                conn.request(method, target.path or "/", body=body, headers=req_headers)
+                conn.request(method, target.request_target, body=body, headers=req_headers)
                 r = conn.getresponse()
                 out.status = r.status
                 raw_headers: dict[str, str] = {}
@@ -265,8 +267,13 @@ class HttpClient:
         self._last_ts = time.monotonic()
 
 
-def _redirect_next(status, method, body, headers, old_host, new_host, strip_keys):
-    """Apply correct per-code redirect semantics and strip creds across hosts."""
+def _redirect_next(status, method, body, headers, old, new, strip_keys):
+    """Apply per-code redirect semantics and strip creds on any origin change.
+
+    `old`/`new` are (scheme, host, port). Credentials are dropped whenever the
+    origin changes in ANY of scheme/host/port, which includes — and is stricter
+    than — an HTTPS->HTTP downgrade. They are kept only for a same-origin hop.
+    """
     method = method.upper()
     if status in (301, 302):
         if method not in ("GET", "HEAD"):
@@ -276,7 +283,10 @@ def _redirect_next(status, method, body, headers, old_host, new_host, strip_keys
             method, body = "GET", None
     # 307 / 308: preserve method and body verbatim
     hdrs = dict(headers or {})
-    if new_host.lower() != old_host.lower():
+    old_origin = (old[0], old[1].lower(), old[2])
+    new_origin = (new[0], new[1].lower(), new[2])
+    downgrade = old[0] == "https" and new[0] == "http"
+    if old_origin != new_origin or downgrade:
         hdrs = {k: v for k, v in hdrs.items() if k.lower() not in strip_keys}
     return method, body, hdrs
 

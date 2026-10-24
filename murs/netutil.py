@@ -21,16 +21,34 @@ class Target:
     host: str
     port: int
     path: str
+    query: str = ""
+
+    @property
+    def authority(self) -> str:
+        """host[:port] with IPv6 literals bracketed; omits default ports."""
+        h = f"[{self.host}]" if ":" in self.host else self.host
+        if (self.scheme, self.port) in (("http", 80), ("https", 443)):
+            return h
+        return f"{h}:{self.port}"
+
+    @property
+    def host_header(self) -> str:
+        """Value for the HTTP Host header (bracketed IPv6, non-default port)."""
+        return self.authority
 
     @property
     def origin(self) -> str:
-        if (self.scheme, self.port) in (("http", 80), ("https", 443)):
-            return f"{self.scheme}://{self.host}"
-        return f"{self.scheme}://{self.host}:{self.port}"
+        return f"{self.scheme}://{self.authority}"
+
+    @property
+    def request_target(self) -> str:
+        """Path plus query — never the fragment — for the request line."""
+        p = self.path or "/"
+        return f"{p}?{self.query}" if self.query else p
 
     @property
     def url(self) -> str:
-        return self.origin + (self.path or "/")
+        return self.origin + self.request_target
 
 
 def normalize_url(raw: str, default_scheme: str = "https") -> Target:
@@ -55,7 +73,8 @@ def normalize_url(raw: str, default_scheme: str = "https") -> Target:
         raise ValueError(f"no host in URL: {raw!r}")
     port = parts.port or DEFAULT_PORTS[scheme]
     path = parts.path or "/"
-    return Target(scheme=scheme, host=host, port=port, path=path)
+    # preserve the query; the fragment is intentionally dropped (never sent).
+    return Target(scheme=scheme, host=host, port=port, path=path, query=parts.query)
 
 
 def join_in_scope(base: Target, href: str) -> Target | None:
@@ -169,24 +188,50 @@ def is_ip_literal(host: str) -> bool:
         return False
 
 
-def resolve_and_pin(host: str, private_ok: bool = False) -> tuple[str | None, str, tuple[str, ...]]:
+def ip_is_loopback(ip_text: str) -> bool:
+    """True only for loopback addresses (127.0.0.0/8, ::1, ::ffff:127.0.0.0/8)."""
+    try:
+        ip = ipaddress.ip_address(ip_text)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+def resolve_and_pin(host: str, lab_private_ok: bool = False) -> tuple[str | None, str, tuple[str, ...]]:
     """Resolve + validate a host and return (pinned_ip, reason, all_ips).
 
     pinned_ip is the single address the caller must connect to; it is None when
-    the host is blocked. Fails closed. When `private_ok` is True the host is an
-    approved local target and the SSRF policy is skipped *for this host only*.
+    the host is blocked. Fails closed.
+
+    The lab exception (`lab_private_ok`, set only for explicitly approved local
+    targets) is deliberately narrow: it permits **loopback addresses only**. An
+    approved hostname that resolves to anything other than loopback — a LAN
+    address, link-local, or the cloud metadata service — is still refused, and
+    every resolved address must be loopback (no mixed answers). Approval of a
+    hostname is never taken as blanket trust in whatever DNS returns.
     """
     if is_ip_literal(host):
-        if private_ok:
-            return host, "approved private literal", (host,)
+        if lab_private_ok:
+            if ip_is_loopback(host):
+                return host, "approved loopback literal", (host,)
+            if ip_is_disallowed(host):
+                return None, "approved host is not loopback (lab exception is loopback-only)", (host,)
+            return host, "ok (public literal)", (host,)
         if ip_is_disallowed(host):
             return None, "literal IP is private/reserved", (host,)
         return host, "ok (public literal)", (host,)
     ips = resolve_host(host)
     if not ips:
         return None, "host does not resolve", ()
-    if private_ok:
-        return ips[0], "approved private host", tuple(ips)
+    if lab_private_ok:
+        # every resolved address must be loopback, or we fail closed.
+        non_loopback = [ip for ip in ips if not ip_is_loopback(ip)]
+        if non_loopback:
+            return None, (f"approved host resolved to non-loopback address "
+                          f"{non_loopback[0]} (lab exception is loopback-only)"), tuple(ips)
+        return ips[0], "approved loopback host", tuple(ips)
     # mixed answers: if ANY resolved address is non-global, refuse (rebinding).
     bad = [ip for ip in ips if ip_is_disallowed(ip)]
     if bad:

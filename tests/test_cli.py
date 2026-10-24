@@ -49,6 +49,20 @@ class TestAuthProfile(unittest.TestCase):
         h = _build_auth_headers(args)
         self.assertIn("Cookie", h)
 
+    def test_auth_from_env_when_flags_absent(self):
+        import os
+        from murs.cli import build_parser, _build_auth_headers
+        args = build_parser().parse_args(["http://x.test"])
+        os.environ["MURS_AUTH_COOKIE"] = "session=fromenv"
+        os.environ["MURS_AUTH_HEADER"] = "Authorization: Bearer envtok"
+        try:
+            h = _build_auth_headers(args)
+            self.assertEqual(h["Cookie"], "session=fromenv")
+            self.assertEqual(h["Authorization"], "Bearer envtok")
+        finally:
+            del os.environ["MURS_AUTH_COOKIE"]
+            del os.environ["MURS_AUTH_HEADER"]
+
 
 class TestLaunchers(unittest.TestCase):
     def test_entry_scripts_exist(self):
@@ -86,6 +100,18 @@ class TestEndToEnd(unittest.TestCase):
             txt = subprocess.run(["pdftotext", os.path.join(tmp, pdfs[0]), "-"],
                                  capture_output=True, text=True).stdout
             self.assertNotIn(secret, txt, "secret leaked into the PDF")
+
+    def test_auth_secret_absent_from_findings_json(self):
+        tmp = tempfile.mkdtemp()
+        bl = os.path.join(tmp, "f.json")
+        secret = "SECRETINJSON98765"
+        with redirect_stdout(io.StringIO()):
+            rc = main(["--lab", "vuln", "--no-color", "--no-pdf",
+                       "--auth-cookie", f"session={secret}", "--save-findings", bl])
+        self.assertEqual(rc, 0)
+        with open(bl, encoding="utf-8") as fh:
+            data = fh.read()
+        self.assertNotIn(secret, data, "secret leaked into findings JSON")
 
     def test_retest_roundtrip(self):
         tmp = tempfile.mkdtemp()
