@@ -52,11 +52,15 @@ class TestRedirectHeaderPolicy(unittest.TestCase):
     B = ("https", "b.test", 443)
 
     def test_custom_secret_header_dropped_cross_origin(self):
-        hdrs = {"X-API-Key": "k", "Authorization": "Bearer t", "X-Keep": "1"}
+        # stricter policy: credentials AND custom caller headers are dropped
+        # cross-origin; only allowlisted generic headers survive.
+        hdrs = {"X-API-Key": "k", "Authorization": "Bearer t", "X-Keep": "1",
+                "Accept": "text/html"}
         _, _, h = _redirect_next(302, "GET", None, hdrs, self.A, self.B, _SENSITIVE_HEADERS)
         self.assertNotIn("X-API-Key", h)
         self.assertNotIn("Authorization", h)
-        self.assertIn("X-Keep", h)
+        self.assertNotIn("X-Keep", h)   # custom caller header not forwarded
+        self.assertIn("Accept", h)      # allowlisted header preserved
 
     def test_custom_secret_header_kept_same_origin(self):
         hdrs = {"X-API-Key": "k"}

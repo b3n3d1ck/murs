@@ -132,10 +132,16 @@ are listed as not-assessed rather than treated as findings.
 
 **Redirect header policy.** A caller-supplied `Host` header never overrides the
 `Host` derived from the validated target (that would defeat scope/SSRF pinning).
-On any origin change, MURS drops not just the known auth headers but anything
-that looks like a credential header (Authorization, Cookie, `X-API-Key`,
-`X-Auth-Token`, `Authentication`, `X-CSRF-Token`, …), so a custom secret header
-is never forwarded to a different origin.
+On any origin change (scheme, host, or port), MURS applies an **allowlist**, not
+a denylist: it forwards only a few generic headers (`Accept`, `Accept-Language`,
+`Accept-Encoding`, `User-Agent`), and drops **every** other caller header —
+credentials and arbitrary custom headers alike. This means correctness does not
+depend on a regex recognising every secret header name; an unknown custom auth
+header (`X-Access-Token`, `X-Amz-Security-Token`, anything) is dropped because it
+is simply not on the allowlist. Body-framing headers (`Content-Type`,
+`Content-Length`) ride along only when the body itself is preserved (307/308);
+when a 301/302/303 turns the request into a bodyless GET, they are removed with
+the body. Same-origin hops keep the caller's headers unchanged.
 
 **Secret redaction (evidence snippets).** `redact_secrets()` masks: credential
 headers by name — Authorization (the full `Bearer`/`Basic` value, not just the

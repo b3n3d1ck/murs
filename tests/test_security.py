@@ -162,12 +162,12 @@ class TestRedirectSemantics(unittest.TestCase):
         self.assertIn("Authorization", h)
 
     def test_credentials_dropped_on_hostname_change(self):
-        hdrs = {"Authorization": "Bearer x", "Cookie": "s=1", "X-Keep": "1"}
+        hdrs = {"Authorization": "Bearer x", "Cookie": "s=1", "Accept": "text/html"}
         _, _, h = _redirect_next(302, "GET", None, hdrs, self.HTTPS_A, self.HTTPS_B,
                                  _SENSITIVE_HEADERS)
         self.assertNotIn("Authorization", h)
         self.assertNotIn("Cookie", h)
-        self.assertIn("X-Keep", h)
+        self.assertIn("Accept", h)  # allowlisted generic header survives
 
     def test_credentials_dropped_on_port_change(self):
         hdrs = {"Authorization": "Bearer x"}

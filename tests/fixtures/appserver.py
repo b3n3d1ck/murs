@@ -52,6 +52,14 @@ class _Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _echo(self, method, bodylen) -> bytes:
+        h = self.headers
+        return (f"METHOD={method} BODYLEN={bodylen} "
+                f"CT={h.get('Content-Type', '-')} CL={h.get('Content-Length', '-')} "
+                f"XAPI={h.get('X-API-Key', '-')} "
+                f"XACCESS={h.get('X-Access-Token', '-')} "
+                f"AUTH={h.get('Authorization', '-')}").encode()
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         qs = self.path.split("?", 1)[1] if "?" in self.path else ""
@@ -82,7 +90,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path in redirect_codes:
             return self._send(redirect_codes[path], b"", extra={"Location": "/echo"})
         if path == "/echo":
-            return self._send(200, b"METHOD=GET BODYLEN=0")
+            return self._send(200, self._echo("GET", 0))
         if path.startswith("/uploads/"):
             name = path[len("/uploads/"):]
             if name in type(self).stored:
@@ -123,7 +131,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path in redirect_codes:
             return self._send(redirect_codes[path], b"", extra={"Location": "/echo"})
         if path == "/echo":
-            return self._send(200, f"METHOD=POST BODYLEN={len(raw)}".encode())
+            return self._send(200, self._echo("POST", len(raw)))
         name, data = _parse_first_file(self.headers.get("Content-Type", ""), raw)
         if path == "/upload":
             if name is None:

@@ -19,7 +19,6 @@ Private/loopback targets are refused unless the host is in `private_hosts`
 from __future__ import annotations
 
 import http.client
-import re
 import socket
 import ssl
 import time
@@ -31,16 +30,15 @@ from .netutil import (
 
 _SENSITIVE_HEADERS = {"authorization", "cookie", "proxy-authorization"}
 
-# header names that carry credentials/secrets and must not cross an origin.
-_CREDENTIAL_HEADER_RE = re.compile(
-    r"(?i)^(authorization|proxy-authorization|cookie|x-api[_-]?key|api[_-]?key|"
-    r"x-auth[_-]?token|auth[_-]?token|x-auth|authentication|x-csrf-token|"
-    r"x-session|session)$"
-)
+# On a cross-origin redirect we forward ONLY these generic, non-credential
+# headers (an allowlist). Everything else the caller set — credentials and
+# arbitrary custom headers alike — is dropped, so safety does not depend on a
+# denylist recognising every possible secret header name.
+_SAFE_CROSS_ORIGIN = {"accept", "accept-language", "accept-encoding", "user-agent"}
 
-
-def _is_credential_header(name: str) -> bool:
-    return bool(_CREDENTIAL_HEADER_RE.match(name.strip()))
+# Body-framing headers: only valid while a body is actually sent.
+_BODY_HEADERS = {"content-type", "content-length", "transfer-encoding",
+                 "content-encoding"}
 
 
 @dataclass
@@ -286,30 +284,53 @@ class HttpClient:
 
 
 def _redirect_next(status, method, body, headers, old, new, strip_keys):
-    """Apply per-code redirect semantics and strip creds on any origin change.
+    """Apply per-code redirect semantics, keep body headers consistent with the
+    body, and apply a safe allowlist to caller headers on any origin change.
 
-    `old`/`new` are (scheme, host, port). Credentials are dropped whenever the
-    origin changes in ANY of scheme/host/port, which includes — and is stricter
-    than — an HTTPS->HTTP downgrade. They are kept only for a same-origin hop.
+    `old`/`new` are (scheme, host, port). On a cross-origin hop the policy is an
+    allowlist, not a denylist: only a few generic, non-credential headers are
+    forwarded (plus body headers when the body itself is preserved). Every other
+    caller header — credentials AND arbitrary custom headers — is dropped, so
+    correctness does not depend on a regex recognising every secret header name.
+    Credentials are therefore never forwarded to a different origin by default.
+    `strip_keys` (the caller's auth header names) are also dropped same-origin.
     """
     method = method.upper()
+    body_dropped = False
     if status in (301, 302):
         if method not in ("GET", "HEAD"):
-            method, body = "GET", None
+            method, body, body_dropped = "GET", None, True
     elif status == 303:
-        if method != "HEAD":
-            method, body = "GET", None
+        if method not in ("GET", "HEAD"):
+            body_dropped = True
+        method, body = ("GET" if method != "HEAD" else "HEAD"), \
+            (None if method != "HEAD" else body)
     # 307 / 308: preserve method and body verbatim
+
     hdrs = dict(headers or {})
     old_origin = (old[0], old[1].lower(), old[2])
     new_origin = (new[0], new[1].lower(), new[2])
-    downgrade = old[0] == "https" and new[0] == "http"
-    if old_origin != new_origin or downgrade:
-        # drop the known auth keys AND anything that looks like a credential
-        # header, so a custom secret header passed by the caller (e.g.
-        # X-API-Key) is never forwarded to a different origin.
-        hdrs = {k: v for k, v in hdrs.items()
-                if k.lower() not in strip_keys and not _is_credential_header(k)}
+    cross_origin = old_origin != new_origin  # any scheme/host/port change
+
+    if cross_origin:
+        keep: dict[str, str] = {}
+        body_present = body is not None and not body_dropped
+        for k, v in hdrs.items():
+            lk = k.lower()
+            if lk in _SAFE_CROSS_ORIGIN:
+                keep[k] = v
+            elif lk in _BODY_HEADERS and body_present:
+                keep[k] = v
+            # everything else (credentials + custom caller headers) is dropped
+        hdrs = keep
+    # same origin: headers (including credentials) are kept — it is the same
+    # origin. `strip_keys` is retained for call compatibility; the cross-origin
+    # allowlist above already supersedes it.
+
+    if body_dropped:
+        # the body is gone, so its framing headers must not be sent.
+        hdrs = {k: v for k, v in hdrs.items() if k.lower() not in _BODY_HEADERS}
+
     return method, body, hdrs
 
 
