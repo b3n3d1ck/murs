@@ -19,6 +19,7 @@ Private/loopback targets are refused unless the host is in `private_hosts`
 from __future__ import annotations
 
 import http.client
+import re
 import socket
 import ssl
 import time
@@ -29,6 +30,17 @@ from .netutil import (
 )
 
 _SENSITIVE_HEADERS = {"authorization", "cookie", "proxy-authorization"}
+
+# header names that carry credentials/secrets and must not cross an origin.
+_CREDENTIAL_HEADER_RE = re.compile(
+    r"(?i)^(authorization|proxy-authorization|cookie|x-api[_-]?key|api[_-]?key|"
+    r"x-auth[_-]?token|auth[_-]?token|x-auth|authentication|x-csrf-token|"
+    r"x-session|session)$"
+)
+
+
+def _is_credential_header(name: str) -> bool:
+    return bool(_CREDENTIAL_HEADER_RE.match(name.strip()))
 
 
 @dataclass
@@ -213,9 +225,15 @@ class HttpClient:
             "Connection": "close",
         }
         # auth is injected by request() into `headers`, so it is dropped on a
-        # host change rather than re-added here on every hop.
+        # host change rather than re-added here on every hop. A caller-supplied
+        # Host header is NOT allowed to override the Host derived from the
+        # validated target (it would defeat scope/SSRF pinning).
         if headers:
-            req_headers.update(headers)
+            for k, v in headers.items():
+                if k.lower() == "host":
+                    continue
+                req_headers[k] = v
+        req_headers["Host"] = target.host_header
 
         last_err = None
         started = time.monotonic()
@@ -287,7 +305,11 @@ def _redirect_next(status, method, body, headers, old, new, strip_keys):
     new_origin = (new[0], new[1].lower(), new[2])
     downgrade = old[0] == "https" and new[0] == "http"
     if old_origin != new_origin or downgrade:
-        hdrs = {k: v for k, v in hdrs.items() if k.lower() not in strip_keys}
+        # drop the known auth keys AND anything that looks like a credential
+        # header, so a custom secret header passed by the caller (e.g.
+        # X-API-Key) is never forwarded to a different origin.
+        hdrs = {k: v for k, v in hdrs.items()
+                if k.lower() not in strip_keys and not _is_credential_header(k)}
     return method, body, hdrs
 
 

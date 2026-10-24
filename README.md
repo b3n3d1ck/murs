@@ -130,6 +130,25 @@ are listed as not-assessed rather than treated as findings.
 > input path before it reaches the process — only what it does with the value
 > afterward. This is not claimed to be audited end-to-end.
 
+**Redirect header policy.** A caller-supplied `Host` header never overrides the
+`Host` derived from the validated target (that would defeat scope/SSRF pinning).
+On any origin change, MURS drops not just the known auth headers but anything
+that looks like a credential header (Authorization, Cookie, `X-API-Key`,
+`X-Auth-Token`, `Authentication`, `X-CSRF-Token`, …), so a custom secret header
+is never forwarded to a different origin.
+
+**Secret redaction (evidence snippets).** `redact_secrets()` masks: credential
+headers by name — Authorization (the full `Bearer`/`Basic` value, not just the
+scheme word), Proxy-Authorization, Cookie, Set-Cookie, X-API-Key / API-Key,
+X-Auth-Token, Authentication, X-CSRF-Token; `Bearer`/`Basic` values anywhere;
+`key=value` secrets in query strings / form bodies; `"key":"value"` secrets in
+JSON; and any long opaque token. It is **best-effort and pattern-based, not
+universal** — it won't catch every encoding, custom key name, or
+split/obfuscated value, and it scans only the first ~600 chars. The reliable
+control is that MURS never stores request auth headers on responses or in
+findings in the first place (verified by tests that a Bearer-token canary is
+absent from stdout, the PDF, and the findings JSON).
+
 ### Setting scope
 
 - `--scope-host HOST` (repeatable) — hosts allowed in scope. The target host is

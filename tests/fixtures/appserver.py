@@ -57,6 +57,11 @@ class _Handler(BaseHTTPRequestHandler):
         qs = self.path.split("?", 1)[1] if "?" in self.path else ""
         if path == "/echo-query":
             return self._send(200, f"QUERY={qs}".encode())
+        if path == "/echo-host":
+            return self._send(200, f"HOST={self.headers.get('Host', '')}".encode())
+        if path == "/echo-headers":
+            names = ",".join(sorted(k.lower() for k in self.headers.keys()))
+            return self._send(200, f"HEADERS={names}".encode())
         if path == "/":
             return self._send(200, INDEX)
         if path == "/about":

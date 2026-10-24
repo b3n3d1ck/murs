@@ -71,7 +71,18 @@ def normalize_url(raw: str, default_scheme: str = "https") -> Target:
     host = (parts.hostname or "").lower()
     if not host:
         raise ValueError(f"no host in URL: {raw!r}")
-    port = parts.port or DEFAULT_PORTS[scheme]
+    # distinguish an unspecified port (-> scheme default) from an explicit one,
+    # and reject invalid ports outright instead of silently defaulting.
+    try:
+        raw_port = parts.port  # None if unspecified; ValueError if malformed/out-of-range
+    except ValueError:
+        raise ValueError(f"invalid port in URL: {raw!r}")
+    if raw_port is None:
+        port = DEFAULT_PORTS[scheme]
+    else:
+        if raw_port <= 0 or raw_port > 65535:
+            raise ValueError(f"port out of range (1-65535): {raw_port}")
+        port = raw_port
     path = parts.path or "/"
     # preserve the query; the fragment is intentionally dropped (never sent).
     return Target(scheme=scheme, host=host, port=port, path=path, query=parts.query)
@@ -239,18 +250,57 @@ def resolve_and_pin(host: str, lab_private_ok: bool = False) -> tuple[str | None
     return ips[0], "ok", tuple(ips)
 
 
-_SECRET_RE = re.compile(
-    r"(?i)\b(authorization|cookie|set-cookie|token|passwd|password|secret|api[_-]?key|session)"
-    r"(\s*[:=]\s*)([^\s;,&\"']{4,})"
+# Credential-bearing HTTP header names. The value is masked to end-of-line so a
+# scheme prefix (e.g. "Bearer"/"Basic") never leaves the token exposed.
+_HEADER_SECRET = re.compile(
+    r"(?im)^(\s*(?:authorization|proxy-authorization|cookie|set-cookie|"
+    r"x-api[_-]?key|api[_-]?key|x-auth[_-]?token|auth[_-]?token|x-auth|"
+    r"authentication|x-csrf-token|token|password|passwd|secret|session)\s*:\s*)(.+)$"
 )
-_LONG_B64 = re.compile(r"\b[A-Za-z0-9+/_-]{24,}={0,2}\b")
+# "Bearer <token>" / "Basic <creds>" anywhere (covers non-line-anchored text).
+_SCHEME_SECRET = re.compile(r"(?i)\b(bearer|basic)\s+([A-Za-z0-9+/=._~\-]{6,})")
+# key=value secrets in query strings / form bodies.
+_KV_SECRET = re.compile(
+    r"(?i)\b(token|passwd|password|secret|api[_-]?key|access[_-]?token|session|sid|auth)"
+    r"(=)([^\s;&\"'()]{3,})"
+)
+# "key": "value" in JSON-ish blobs.
+_JSON_SECRET = re.compile(
+    r"(?i)(\"(?:token|password|secret|api[_-]?key|access[_-]?token|session|authorization)\"\s*:\s*\")"
+    r"([^\"]{3,})(\")"
+)
+# long opaque tokens as a backstop.
+_LONG_TOKEN = re.compile(r"\b[A-Za-z0-9+/_-]{24,}={0,2}\b")
 
 
 def redact_secrets(text: str, limit: int = 600) -> str:
-    """Mask credential-like values before anything is logged or reported."""
+    """Mask credential-like values before anything is logged or reported.
+
+    Supported formats (masked to `[REDACTED]`):
+      * HTTP credential headers by name — Authorization (incl. the full
+        `Bearer`/`Basic` value), Proxy-Authorization, Cookie, Set-Cookie,
+        X-API-Key / API-Key, X-Auth-Token / Auth-Token, Authentication,
+        X-CSRF-Token, and token/password/secret/session headers. The entire
+        header value (to end of line) is masked, case-insensitively.
+      * `Bearer <token>` / `Basic <creds>` anywhere in the text.
+      * `key=value` secrets in query strings / form bodies.
+      * `"key": "value"` secrets in JSON-ish text.
+      * Any remaining long opaque token (>=24 base64/hex chars).
+
+    Limitations (documented, not claimed universal): redaction is best-effort
+    and pattern-based. It does not understand every encoding, custom header
+    name, split/obfuscated value, or non-English key name, and it operates only
+    on the first `limit` characters. It reduces the chance of a leak in evidence
+    snippets; it is not a guarantee. The reliable control is to not place
+    credentials into evidence/logs in the first place, which MURS does by never
+    storing request auth headers on responses or in findings.
+    """
     if not text:
         return ""
     t = text[:limit]
-    t = _SECRET_RE.sub(lambda m: m.group(1) + m.group(2) + "[REDACTED]", t)
-    t = _LONG_B64.sub("[REDACTED]", t)
+    t = _HEADER_SECRET.sub(lambda m: m.group(1) + "[REDACTED]", t)
+    t = _SCHEME_SECRET.sub(lambda m: m.group(1) + " [REDACTED]", t)
+    t = _KV_SECRET.sub(lambda m: m.group(1) + m.group(2) + "[REDACTED]", t)
+    t = _JSON_SECRET.sub(lambda m: m.group(1) + "[REDACTED]" + m.group(3), t)
+    t = _LONG_TOKEN.sub("[REDACTED]", t)
     return t
